@@ -1,61 +1,456 @@
-import streamlit as st
+import rbp
 import numpy as np
 import pandas as pd
+import streamlit as st
 from helpers import prep_greg_data
+from typing import List, Optional
 
-st.title("Greg Data Viewer")
-st.write("This app displays the prepared Greg data using the prep_greg_data function.")
+st.set_page_config(page_title="Company Peer Analysis", layout="wide")
 
-# Add sidebar controls for optional parameters
-st.sidebar.header("Data Filters")
-start_date = st.sidebar.text_input("Start Date (YYYY-MM)", placeholder="e.g., 2023-01")
-end_date = st.sidebar.text_input("End Date (YYYY-MM)", placeholder="e.g., 2024-12")
-force_reload = st.sidebar.checkbox("Force Reload", help="Force reprocessing even if cached file exists")
+def load_data(start_date: Optional[str] = None, end_date: Optional[str] = None):
+    """Load and cache the data with optional date filtering"""
+    # Create a cache key based on date filters
+    cache_key = f"df_{start_date}_{end_date}"
 
-# Convert empty strings to None
-start_date = start_date if start_date.strip() else None
-end_date = end_date if end_date.strip() else None
+    if cache_key not in st.session_state:
+        with st.spinner("Loading data..."):
+            st.session_state[cache_key] = prep_greg_data(start_date=start_date, end_date=end_date)
+    return st.session_state[cache_key]
 
-# Load and display data
-if st.button("Load Data") or st.sidebar.button("Apply Filters"):
-    with st.spinner("Loading data..."):
-        try:
-            df = prep_greg_data(start_date=start_date, end_date=end_date, force_reload=force_reload)
+def get_available_months(df: pd.DataFrame) -> List[str]:
+    """Get list of available YEAR_MONTH values for dropdown"""
+    if 'YEAR_MONTH' in df.columns:
+        # Convert periods to strings and sort
+        months = df['YEAR_MONTH'].dropna().unique()
+        months_str = [str(month) for month in months]
+        return sorted(months_str, reverse=True)
+    return []
 
-            st.success(f"Data loaded successfully! Shape: {df.shape}")
+def get_company_options(df: pd.DataFrame) -> List[str]:
+    """Get list of company names and tickers for autocomplete"""
+    companies = []
+    if 'COMPANY_NAME' in df.columns:
+        companies.extend(df['COMPANY_NAME'].dropna().unique().tolist())
+    # if 'TICKER' in df.columns:
+    #     tickers = df['TICKER'].dropna().unique().tolist()
+    #     companies.extend([f"{ticker} (Ticker)" for ticker in tickers])
+    return sorted(companies)
 
-            # Display basic info
-            st.subheader("Dataset Overview")
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Total Rows", df.shape[0])
-            with col2:
-                st.metric("Total Columns", df.shape[1])
-            with col3:
-                st.metric("Memory Usage", f"{df.memory_usage(deep=True).sum() / 1024**2:.1f} MB")
+def get_numerical_columns(df: pd.DataFrame) -> List[str]:
+    """Get numerical columns excluding company identifiers"""
+    exclude_cols = {'COMPANY_ID', 'COMPANY_NAME', 'DAY_DATE', 'YEAR_MONTH', 'INDUSTRY', 'INDUSTRY_GROUP', 'INDUSTRY_SECTOR', 'INDUSTRY_SECTOR_W_BIOTECH'}
+    numerical_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    return [col for col in numerical_cols if col not in exclude_cols]
 
-            # Display column info
-            st.subheader("Column Information")
-            st.write(f"Columns: {', '.join(df.columns.tolist())}")
+def find_company_row(df: pd.DataFrame, company_selection: str) -> Optional[pd.Series]:
+    """Find the company row based on selection"""
+    # if company_selection.endswith(" (Ticker)"):
+    #     ticker = company_selection.replace(" (Ticker)", "")
+    #     matches = df[df['TICKER'] == ticker]
+    # else:
+    matches = df[df['COMPANY_NAME'] == company_selection]
 
-            # Display the dataframe
-            st.subheader("Data Preview")
-            st.dataframe(df, use_container_width=True)
+    if len(matches) > 0:
+        return matches.iloc[0]
+    return None
 
-            # Display basic statistics
-            st.subheader("Basic Statistics")
-            st.dataframe(df.describe(), use_container_width=True)
+def run_peer_analysis(df: pd.DataFrame, target_company: pd.Series, features: List[str],
+                     n_peers: int, use_most_relevant: bool = True):
+    """Run relevance-based peer analysis"""
 
-        except Exception as e:
-            st.error(f"Error loading data: {str(e)}")
+    # Get target company's industry sector
+    target_industry = target_company.get('INDUSTRY_SECTOR_W_BIOTECH', None)
 
-# Auto-load data on first run
-if 'data_loaded' not in st.session_state:
-    st.session_state.data_loaded = True
-    with st.spinner("Loading initial data..."):
-        try:
-            df = prep_greg_data()
-            st.success(f"Initial data loaded! Shape: {df.shape}")
-            st.dataframe(df, use_container_width=True)
-        except Exception as e:
-            st.error(f"Error loading initial data: {str(e)}")
+    if target_industry is None or pd.isna(target_industry):
+        st.error("Target company is missing INDUSTRY_SECTOR_W_BIOTECH information")
+        return None, None
+
+    # Filter to only companies in the same industry sector
+    industry_filtered_df = df[df['INDUSTRY_SECTOR_W_BIOTECH'] == target_industry].copy()
+
+    if len(industry_filtered_df) == 0:
+        st.error(f"No companies found in industry sector: {target_industry}")
+        return None, None
+
+    st.info(f"Filtering analysis to {target_industry} sector: {len(industry_filtered_df)} companies available")
+
+    # Prepare data for RBP analysis
+    # Filter out rows with NaN values in selected features
+    analysis_df = industry_filtered_df.dropna(subset=features)
+
+    if len(analysis_df) == 0:
+        st.error("No valid data available for selected features in the target industry sector")
+        return None, None
+
+    # Check minimum data requirements
+    min_required_rows = max(10, n_peers + 5)  # Need at least n_peers + buffer
+    if len(analysis_df) < min_required_rows:
+        st.error(f"Insufficient data in {target_industry} sector: {len(analysis_df)} companies available, but need at least {min_required_rows} for reliable analysis")
+        return None, None
+
+    # Extract attributes (X) and create prediction circumstances (X_t)
+    X = analysis_df[features].values
+    target_values = target_company[features].values.flatten()  # Flatten to 1D array
+
+    # Check for NaN values in target company using pandas isna() which handles mixed types
+    target_series = target_company[features]
+    if target_series.isna().any():
+        missing_features = [features[i] for i in range(len(features)) if target_series.iloc[i] is pd.NA or pd.isna(target_series.iloc[i])]
+        st.error(f"Target company has missing values for: {missing_features}")
+        return None, None
+
+    # Ensure all target values are numeric
+    try:
+        target_values = target_values.astype(float)
+    except (ValueError, TypeError) as e:
+        st.error(f"Error converting target company features to numeric: {str(e)}")
+        return None, None
+
+    # Check for zero variance in features (which can cause division by zero)
+    for i, feature in enumerate(features):
+        feature_values = X[:, i]
+        if np.var(feature_values) == 0:
+            st.error(f"Feature '{feature}' has zero variance (all values are the same) in {target_industry} sector. This can cause division by zero errors.")
+            return None, None
+
+        # Check for extreme values that might cause numerical issues
+        if np.any(np.isinf(feature_values)) or np.any(np.isnan(feature_values)):
+            st.error(f"Feature '{feature}' contains infinite or NaN values after filtering in {target_industry} sector.")
+            return None, None
+
+    # Check target values for numerical issues
+    if np.any(np.isinf(target_values)) or np.any(np.isnan(target_values)):
+        st.error("Target company has infinite or NaN values in selected features.")
+        return None, None
+
+    # For peer analysis, we'll use a dummy outcome variable (not predicting outcomes, just finding similarity)
+    # Use market cap or first available numerical column as dummy outcome
+    outcome_cols = ['MARKET_CAP_FISCAL', 'IQ_TOTAL_ASSETS', 'TEV_FISCAL']
+    y_col = None
+    for col in outcome_cols:
+        if col in analysis_df.columns:
+            y_col = col
+            break
+
+    if y_col is None:
+        # Use first numerical column as fallback
+        numerical_cols = analysis_df.select_dtypes(include=[np.number]).columns
+        available_cols = [col for col in numerical_cols if col not in features]
+        if len(available_cols) > 0:
+            y_col = available_cols[0]
+        else:
+            st.error("No suitable outcome variable found")
+            return None, None
+
+    y = analysis_df[y_col].values.reshape(-1, 1)
+
+    # Check outcome variable for issues
+    if np.var(y.flatten()) == 0:
+        st.error(f"Outcome variable '{y_col}' has zero variance in {target_industry} sector.")
+        return None, None
+
+    try:
+        # Add debugging info
+        st.info(f"Running analysis with {len(analysis_df)} companies in {target_industry} sector, {len(features)} features, choosing {n_peers} peers")
+
+        # Run prediction to get relevance scores
+        _, pred_details = rbp.predict(X, target_values, y,
+                                         thresh=n_peers,
+                                         most=use_most_relevant,
+                                         pct_thresh=False)
+
+        # Extract relevance scores
+        relevance_scores = pred_details['relevance'].flatten()
+
+        # Check if we got valid relevance scores
+        if len(relevance_scores) == 0:
+            st.error("No relevance scores computed. Try adjusting the threshold or features.")
+            return None, None
+
+        if use_most_relevant:
+            peer_indices = np.argsort(relevance_scores)[-n_peers:][::-1]
+        else:
+            peer_indices = np.argsort(relevance_scores)[:n_peers]
+
+        # Get peer companies
+        peer_companies = analysis_df.iloc[peer_indices].copy()
+        peer_companies['relevance_score'] = relevance_scores[peer_indices]
+
+        return peer_companies, pred_details
+
+    except ZeroDivisionError as e:
+        st.error(f"Division by zero error in RBP analysis. This might be due to insufficient data variation or extreme values in {target_industry} sector. Try selecting different features or a different time period.")
+        st.error(f"Technical details: {str(e)}")
+        return None, None
+    except Exception as e:
+        st.error(f"Error in peer analysis: {str(e)}")
+        # Add more detailed error info for debugging
+        st.error(f"Dataset shape: {X.shape}, Target shape: {target_values.shape}, Features: {features}")
+        return None, None
+
+def validate_features_for_analysis(df: pd.DataFrame, features: List[str]) -> tuple[bool, List[str]]:
+    """Validate that selected features are suitable for analysis"""
+    issues = []
+
+    for feature in features:
+        if feature not in df.columns:
+            issues.append(f"'{feature}' not found in dataset")
+            continue
+
+        # Check for sufficient non-null data
+        non_null_count = df[feature].count()
+        if non_null_count < 10:
+            issues.append(f"'{feature}' has only {non_null_count} non-null values")
+            continue
+
+        # Check for variance
+        feature_values = df[feature].dropna()
+        if len(feature_values) > 1 and np.var(feature_values) == 0:
+            issues.append(f"'{feature}' has zero variance (all values are the same)")
+            continue
+
+        # Check for extreme values
+        if np.any(np.isinf(feature_values)):
+            issues.append(f"'{feature}' contains infinite values")
+
+    return len(issues) == 0, issues
+
+# Main UI
+st.title("🏢 Company Peer Analysis Dashboard")
+st.write("Find the most relevant peer companies using relevance-based prediction methods.")
+
+# Sidebar configuration
+st.sidebar.header("🔧 Analysis Configuration")
+
+# Date filtering section
+st.sidebar.subheader("📅 Date Filter")
+
+# First load data without filters to get available months
+initial_df = load_data()
+available_months = get_available_months(initial_df)
+
+# Month-year selection
+selected_month = st.sidebar.selectbox(
+    "Select Month-Year",
+    options=["All Data"] + available_months,
+    index=0,
+    help="Filter data to a specific month-year. Select 'All Data' to include all available data."
+)
+
+# Load filtered data based on selection
+if selected_month == "All Data":
+    df = initial_df
+    st.sidebar.info(f"📊 Using all available data")
+else:
+    df = load_data(start_date=selected_month, end_date=selected_month)
+    st.sidebar.info(f"📊 Data filtered to: {selected_month}")
+
+# Display data stats
+st.sidebar.metric("Companies in Dataset", len(df))
+if 'YEAR_MONTH' in df.columns:
+    unique_months = df['YEAR_MONTH'].nunique()
+    st.sidebar.metric("Time Periods", unique_months)
+
+st.sidebar.divider()
+
+# Company selection with autocomplete
+company_options = get_company_options(df)
+selected_company = st.sidebar.selectbox(
+    "Select Target Company",
+    options=[""] + company_options,
+    index=0,
+    help="Start typing to search for a company name or ticker"
+)
+
+if selected_company:
+    target_company = find_company_row(df, selected_company)
+
+    if target_company is not None:
+        # Feature selection
+        numerical_cols = get_numerical_columns(df)
+        selected_features = st.sidebar.multiselect(
+            "Select Features for Analysis",
+            options=numerical_cols,
+            default=numerical_cols[:5] if len(numerical_cols) >= 5 else numerical_cols,
+            help="Choose the financial metrics to use for finding similar companies"
+        )
+
+        # Number of peers
+        n_peers = st.sidebar.slider(
+            "Number of Peer Companies",
+            min_value=3,
+            max_value=min(50, len(df)-1),  # Ensure we don't exceed available companies
+            value=min(10, len(df)-1),
+            help="Number of most similar companies to find"
+        )
+
+        # Analysis type
+        use_most_relevant = st.sidebar.radio(
+            "Analysis Type",
+            options=[True, False],
+            format_func=lambda x: "Most Relevant" if x else "Least Relevant",
+            help="Find most similar or most different companies"
+        ) == True
+
+        # Run analysis button
+        if st.sidebar.button("🔍 Find Peer Companies", type="primary"):
+            if len(selected_features) == 0:
+                st.error("Please select at least one feature for analysis.")
+            else:
+                # Validate features before running analysis
+                features_valid, feature_issues = validate_features_for_analysis(df, selected_features)
+
+                if not features_valid:
+                    st.error("Issues with selected features:")
+                    for issue in feature_issues:
+                        st.error(f"• {issue}")
+                    st.info("Try selecting different features or a different time period.")
+                else:
+                    with st.spinner("Running peer analysis..."):
+                        peer_companies, analysis_details = run_peer_analysis(
+                            df, target_company, selected_features, n_peers, use_most_relevant
+                        )
+
+                        if peer_companies is not None:
+                            st.session_state.peer_results = {
+                                'target_company': target_company,
+                                'peer_companies': peer_companies,
+                                'selected_features': selected_features,
+                                'analysis_details': analysis_details,
+                                'selected_month': selected_month
+                            }
+
+# Main content area
+if selected_company and target_company is not None:
+    # Display target company info
+    st.subheader(f"🎯 Target Company: {selected_company}")
+
+    # Show selected time period
+    if selected_month != "All Data":
+        st.info(f"📅 Analysis for time period: **{selected_month}**")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        if 'INDUSTRY_SECTOR_W_BIOTECH' in target_company.index:
+            st.metric("Industry", target_company['INDUSTRY_SECTOR_W_BIOTECH'])
+
+    with col2:
+        if 'MARKET_CAP_FISCAL' in target_company.index:
+            market_cap = target_company['MARKET_CAP_FISCAL']
+            if pd.notna(market_cap):
+                st.metric("Market Cap", f"${market_cap:,.0f}M")
+
+    with col3:
+        if 'TEV_FISCAL' in target_company.index:
+            tev = target_company['TEV_FISCAL']
+            if pd.notna(tev):
+                st.metric("TEV", f"${tev:,.0f}M")
+
+    # Display results if available
+    if 'peer_results' in st.session_state:
+        results = st.session_state.peer_results
+        peer_companies = results['peer_companies']
+        selected_features = results['selected_features']
+
+        st.subheader(f'📊 {"Most" if use_most_relevant else "Least"} Relevant Peer Companies')
+
+        # Display peer companies table
+        display_cols = ['COMPANY_NAME', 'relevance_score'] # Removed 'TICKER'
+        if 'INDUSTRY_SECTOR_W_BIOTECH' in peer_companies.columns:
+            display_cols.append('INDUSTRY_SECTOR_W_BIOTECH')
+        if 'MARKET_CAP_FISCAL' in peer_companies.columns:
+            display_cols.append('MARKET_CAP_FISCAL')
+
+        # Add selected features to display
+        display_cols.extend([col for col in selected_features if col in peer_companies.columns])
+
+        # Format the dataframe for display
+        display_df = peer_companies[display_cols].copy()
+        display_df['relevance_score'] = display_df['relevance_score'].round(4)
+
+        if 'MARKET_CAP_FISCAL' in display_df.columns:
+            display_df['MARKET_CAP_FISCAL'] = display_df['MARKET_CAP_FISCAL'].apply(
+                lambda x: f"${x:,.0f}M" if pd.notna(x) else "N/A"
+            )
+
+        st.dataframe(display_df, use_container_width=True)
+
+        # Feature comparison chart
+        st.subheader("📈 Feature Comparison")
+
+        if len(selected_features) > 0:
+            # Create comparison dataframe
+            comparison_data = []
+
+            # Add target company
+            target_row = {'Company': selected_company, 'Type': 'Target'}
+            for feature in selected_features:
+                target_row[feature] = target_company[feature] if feature in target_company.index else np.nan
+            comparison_data.append(target_row)
+
+            # Add peer companies (top 5 for readability)
+            for idx, (_, peer) in enumerate(peer_companies.head(5).iterrows()):
+                peer_row = {'Company': peer['COMPANY_NAME'], 'Type': f'Peer {idx+1}'}
+                for feature in selected_features:
+                    peer_row[feature] = peer[feature] if feature in peer.index else np.nan
+                comparison_data.append(peer_row)
+
+            comparison_df = pd.DataFrame(comparison_data)
+
+            # Create tabs for different visualizations
+            tab1, tab2 = st.tabs(["📊 Bar Chart", "📋 Data Table"])
+
+            with tab1:
+                # Select feature to visualize
+                feature_to_plot = st.selectbox(
+                    "Select feature to visualize:",
+                    options=selected_features,
+                    key="feature_plot"
+                )
+
+                if feature_to_plot:
+                    chart_data = comparison_df[['Company', 'Type', feature_to_plot]].copy()
+                    chart_data = chart_data.dropna(subset=[feature_to_plot])
+
+                    if len(chart_data) > 0:
+                        st.bar_chart(
+                            chart_data.set_index('Company')[feature_to_plot],
+                            use_container_width=True
+                        )
+
+            with tab2:
+                st.dataframe(comparison_df, use_container_width=True)
+
+else:
+    # Default view when no company is selected
+    st.info("👆 Please select a company from the sidebar to begin peer analysis.")
+
+    # Show data overview
+    st.subheader("📋 Dataset Overview")
+
+    # Show selected time period
+    if selected_month != "All Data":
+        st.info(f"📅 Current view filtered to: **{selected_month}**")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric("Total Companies", len(df))
+    with col2:
+        st.metric("Available Features", len(get_numerical_columns(df)))
+    with col3:
+        if 'INDUSTRY_SECTOR_W_BIOTECH' in df.columns:
+            st.metric("Industries", df['INDUSTRY_SECTOR_W_BIOTECH'].nunique())
+
+    # Show sample data
+    st.subheader("📊 Sample Data")
+    sample_cols = ['COMPANY_NAME', 'INDUSTRY_SECTOR_W_BIOTECH', 'MARKET_CAP_FISCAL'] # Removed 'TICKER'
+    if 'YEAR_MONTH' in df.columns:
+        sample_cols.insert(-1, 'YEAR_MONTH')  # Add YEAR_MONTH before MARKET_CAP_FISCAL
+    available_cols = [col for col in sample_cols if col in df.columns]
+    st.dataframe(df[available_cols].head(10), use_container_width=True)
+
+# Footer
+st.markdown("---")
+st.markdown("*Powered by Relevance-Based Prediction (RBP) methodology*")

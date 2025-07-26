@@ -34,7 +34,7 @@ def get_company_options(df: pd.DataFrame) -> List[str]:
     # if 'TICKER' in df.columns:
     #     tickers = df['TICKER'].dropna().unique().tolist()
     #     companies.extend([f"{ticker} (Ticker)" for ticker in tickers])
-    return sorted(companies)
+    return sorted(companies, key=str.lower)  # Sort case-insensitively
 
 def get_numerical_columns(df: pd.DataFrame) -> List[str]:
     """Get numerical columns excluding company identifiers"""
@@ -59,7 +59,8 @@ def find_company_row(df: pd.DataFrame, company_selection: str) -> Optional[pd.Se
     #     ticker = company_selection.replace(" (Ticker)", "")
     #     matches = df[df['TICKER'] == ticker]
     # else:
-    matches = df[df['COMPANY_NAME'] == company_selection]
+    # Case-insensitive matching
+    matches = df[df['COMPANY_NAME'].str.lower() == company_selection.lower()]
 
     if len(matches) > 0:
         return matches.iloc[0]
@@ -101,7 +102,7 @@ def run_peer_analysis(df: pd.DataFrame, target_company: pd.Series, features: Lis
 
     # Extract attributes (X) and create prediction circumstances (X_t)
     X = analysis_df[features].values
-    target_values = target_company[features].values.flatten()  # Flatten to 1D array
+    target_values = target_company[features].values.flatten()
 
     # Check for NaN values in target company using pandas isna() which handles mixed types
     target_series = target_company[features]
@@ -134,6 +135,7 @@ def run_peer_analysis(df: pd.DataFrame, target_company: pd.Series, features: Lis
         st.error("Target company has infinite or NaN values in selected features.")
         return None, None
 
+    # TODO
     # For peer analysis, we'll use a dummy outcome variable (not predicting outcomes, just finding similarity)
     # Use market cap or first available numerical column as dummy outcome
     outcome_cols = ['MARKET_CAP_FISCAL', 'IQ_TOTAL_ASSETS', 'TEV_FISCAL']
@@ -173,19 +175,31 @@ def run_peer_analysis(df: pd.DataFrame, target_company: pd.Series, features: Lis
         # Extract relevance scores
         relevance_scores = pred_details['relevance'].flatten()
 
+        # Extract similarity and informativeness using correct keys
+        similarity_scores = pred_details['sim_it'].flatten()
+        informativeness_scores = pred_details['info_t'].flatten()
+
         # Check if we got valid relevance scores
         if len(relevance_scores) == 0:
             st.error("No relevance scores computed. Try adjusting the threshold or features.")
             return None, None
 
         if use_most_relevant:
-            peer_indices = np.argsort(relevance_scores)[-n_peers:][::-1]
+            # Skip the first most relevant, then take n_peers
+            peer_indices = np.argsort(relevance_scores)[-(n_peers+1):-1][::-1]
         else:
-            peer_indices = np.argsort(relevance_scores)[:n_peers]
+            # Skip the last least relevant, then take n_peers
+            peer_indices = np.argsort(relevance_scores)[1:n_peers+1]
 
         # Get peer companies
         peer_companies = analysis_df.iloc[peer_indices].copy()
-        peer_companies['relevance_score'] = relevance_scores[peer_indices]
+        peer_companies['RELEVANCE_SCORE'] = relevance_scores[peer_indices]
+
+        # Add similarity and informativeness scores if available
+        if similarity_scores is not None:
+            peer_companies['SIMILARITY_SCORE'] = similarity_scores[peer_indices]
+        if informativeness_scores is not None:
+            peer_companies['INFORMATIVENESS_SCORE'] = informativeness_scores[peer_indices]
 
         return peer_companies, pred_details
 
@@ -226,6 +240,24 @@ def validate_features_for_analysis(df: pd.DataFrame, features: List[str]) -> tup
 
     return len(issues) == 0, issues
 
+# FIXME
+def filter_peer_results(all_peer_companies, analysis_details, n_peers, use_most_relevant):
+    """Filter peer results based on current settings without recalculating RBP"""
+    if len(all_peer_companies) == 0:
+        return all_peer_companies
+
+    # Get all relevance scores and sort indices
+    relevance_scores = all_peer_companies['RELEVANCE_SCORE'].values
+
+    if use_most_relevant:
+        # Get top n_peers (already sorted in descending order during initial analysis)
+        filtered_peers = all_peer_companies.head(n_peers)
+    else:
+        # Get bottom n_peers (reverse the order)
+        filtered_peers = all_peer_companies.tail(n_peers).iloc[::-1]
+
+    return filtered_peers
+
 # Main UI
 st.title("🏢 Company Peer Analysis Dashboard")
 st.write("Find the most relevant comp set for a company of interest using relevance-based prediction (RBP).")
@@ -233,112 +265,208 @@ st.write("Find the most relevant comp set for a company of interest using releva
 # Sidebar configuration
 st.sidebar.header("🔧 Analysis Configuration")
 
+# Check if we have existing results to determine if controls should be frozen
+has_results = 'peer_results' in st.session_state
+analysis_in_progress = 'analysis_started' in st.session_state
+freeze_controls = has_results or analysis_in_progress
+
 # Date filtering section
 st.sidebar.subheader("📅 Date Filter")
 
-# First load data without filters to get available months
-initial_df = load_data()
-available_months = get_available_months(initial_df)
-
-# Month-year selection
-selected_month = st.sidebar.selectbox(
-    "Select Month-Year",
-    options=["All Data"] + available_months,
-    index=0,
-    help="Filter data to a specific month-year. Select 'All Data' to include all available data."
-)
-
-# Load filtered data based on selection
-if selected_month == "All Data":
-    df = initial_df
-    st.sidebar.info(f"📊 Using all available data")
+if freeze_controls:
+    # Show current selection but disable changing it
+    if has_results:
+        current_month = st.session_state.peer_results['selected_month']
+    else:
+        current_month = st.session_state.get('temp_selected_month', '')
+    st.sidebar.info(f"📊 Locked to: {current_month if current_month else 'All data'}")
+    selected_month = current_month
+    df = load_data(start_date=selected_month, end_date=selected_month) if selected_month else load_data()
 else:
-    df = load_data(start_date=selected_month, end_date=selected_month)
-    st.sidebar.info(f"📊 Data filtered to: {selected_month}")
+    # First load data without filters to get available months
+    initial_df = load_data()
+    available_months = get_available_months(initial_df)
 
-# Display data stats
-st.sidebar.metric("Companies in Dataset", len(df))
-if 'YEAR_MONTH' in df.columns:
-    unique_months = df['YEAR_MONTH'].nunique()
-    st.sidebar.metric("Time Periods", unique_months)
+    # Month-year selection
+    selected_month = st.sidebar.selectbox(
+        "Select Month-Year",
+        options=[""] + available_months,
+        index=0,
+        help="Select a specific month-year to filter data, or leave blank to see all data."
+    )
+
+    # Load filtered data based on selection
+    if selected_month == "":
+        df = initial_df
+        st.sidebar.info(f"📊 Using all available data")
+    else:
+        df = load_data(start_date=selected_month, end_date=selected_month)
+        st.sidebar.info(f"📊 Data filtered to: {selected_month}")
 
 st.sidebar.divider()
 
 # Company selection with autocomplete
-company_options = get_company_options(df)
-selected_company = st.sidebar.selectbox(
-    "Select Target Company",
-    options=[""] + company_options,
-    index=0,
-    help="Start typing to search for a company name or ticker"
-)
+if freeze_controls:
+    # Show current selection but disable changing it
+    if has_results:
+        current_company = st.session_state.peer_results['target_company']['COMPANY_NAME']
+        target_company = st.session_state.peer_results['target_company']
+    else:
+        current_company = st.session_state.get('temp_selected_company', '')
+        target_company = st.session_state.get('temp_target_company', None)
+    st.sidebar.info(f"🎯 Locked to: {current_company}")
+    selected_company = current_company
+else:
+    company_options = get_company_options(df)
+    selected_company = st.sidebar.selectbox(
+        "Select Target Company",
+        options=[""] + company_options,
+        index=0,
+        help="Start typing to search for a company name"
+    )
 
 if selected_company:
-    target_company = find_company_row(df, selected_company)
+    if not freeze_controls:
+        target_company = find_company_row(df, selected_company)
 
     if target_company is not None:
-        # Feature selection
-        numerical_cols = get_numerical_columns(df)
-        selected_features = st.sidebar.multiselect(
-            "Select Features for Analysis",
-            options=numerical_cols,
-            default=numerical_cols[:5] if len(numerical_cols) >= 5 else numerical_cols,
-            help="Choose the financial metrics to use for finding similar companies"
-        )
+        if freeze_controls:
+            # Show current features but disable changing them
+            if has_results:
+                current_features = st.session_state.peer_results['selected_features']
+            else:
+                current_features = st.session_state.get('temp_selected_features', [])
+            st.sidebar.info(f"📊 Features locked: {', '.join(current_features)}")
+            selected_features = current_features
+        else:
+            # Feature selection
+            numerical_cols = get_numerical_columns(df)
+            selected_features = st.sidebar.multiselect(
+                "Select Features for Analysis",
+                options=numerical_cols,
+                default=numerical_cols[:5] if len(numerical_cols) >= 5 else numerical_cols,
+                help="Choose the financial metrics to use for finding similar companies"
+            )
 
-        # Number of peers
+        # Number of peers - always interactive (unless analysis is in progress)
+        if has_results:
+            max_possible_peers = len(st.session_state.peer_results['all_peer_companies'])
+        else:
+            max_possible_peers = min(50, len(df)-1)
+
         n_peers = st.sidebar.slider(
             "Number of Peer Companies",
             min_value=3,
-            max_value=min(50, len(df)-1),  # Ensure we don't exceed available companies
-            value=min(10, len(df)-1),
-            help="Number of most similar companies to find"
+            max_value=max_possible_peers,
+            value=min(10, max_possible_peers),
+            help="Number of most similar companies to find",
+            disabled=analysis_in_progress and not has_results
         )
 
-        # Analysis type
+        # Analysis type - always interactive (unless analysis is in progress)
         use_most_relevant = st.sidebar.radio(
             "Analysis Type",
             options=[True, False],
             format_func=lambda x: "Most Relevant" if x else "Least Relevant",
-            help="Find most similar or most different companies"
+            help="Find most similar or most different companies",
+            disabled=analysis_in_progress and not has_results
         ) == True
 
-        # Run analysis button
-        if st.sidebar.button("🔍 Find Peer Companies", type="primary"):
-            if len(selected_features) == 0:
-                st.error("Please select at least one feature for analysis.")
-            else:
-                # Validate features before running analysis
-                features_valid, feature_issues = validate_features_for_analysis(df, selected_features)
-
-                if not features_valid:
-                    st.error("Issues with selected features:")
-                    for issue in feature_issues:
-                        st.error(f"• {issue}")
-                    st.info("Try selecting different features or a different time period.")
+        # Run analysis button or reset button
+        if freeze_controls and has_results:
+            if st.sidebar.button("🔄 Start New Analysis", type="secondary"):
+                # Clear all analysis states to unfreeze controls
+                keys_to_remove = ['peer_results', 'analysis_started', 'temp_selected_month',
+                                'temp_selected_company', 'temp_target_company', 'temp_selected_features']
+                for key in keys_to_remove:
+                    if key in st.session_state:
+                        del st.session_state[key]
+                st.rerun()
+        elif analysis_in_progress and not has_results:
+            st.sidebar.info("🔄 Analysis in progress...")
+            # Show a disabled button during analysis
+            st.sidebar.button("🔍 Find Peer Companies", type="primary", disabled=True)
+        else:
+            if st.sidebar.button("🔍 Find Peer Companies", type="primary"):
+                if len(selected_features) == 0:
+                    st.error("Please select at least one feature for analysis.")
                 else:
-                    with st.spinner("Running peer analysis..."):
-                        peer_companies, analysis_details = run_peer_analysis(
-                            df, target_company, selected_features, n_peers, use_most_relevant
-                        )
+                    # Lock controls immediately by setting analysis state
+                    st.session_state.analysis_started = True
+                    st.session_state.temp_selected_month = selected_month
+                    st.session_state.temp_selected_company = selected_company
+                    st.session_state.temp_target_company = target_company
+                    st.session_state.temp_selected_features = selected_features
 
-                        if peer_companies is not None:
-                            st.session_state.peer_results = {
-                                'target_company': target_company,
-                                'peer_companies': peer_companies,
-                                'selected_features': selected_features,
-                                'analysis_details': analysis_details,
-                                'selected_month': selected_month
-                            }
+                    # Validate features before running analysis
+                    features_valid, feature_issues = validate_features_for_analysis(df, selected_features)
+
+                    if not features_valid:
+                        st.error("Issues with selected features:")
+                        for issue in feature_issues:
+                            st.error(f"• {issue}")
+                        st.info("Try selecting different features or a different time period.")
+                        # Clear analysis state if validation fails
+                        keys_to_remove = ['analysis_started', 'temp_selected_month',
+                                        'temp_selected_company', 'temp_target_company', 'temp_selected_features']
+                        for key in keys_to_remove:
+                            if key in st.session_state:
+                                del st.session_state[key]
+                    else:
+                        # Force rerun immediately to show locked state
+                        st.rerun()
+
+# Check if we should run the analysis (after the rerun)
+if 'analysis_started' in st.session_state and 'peer_results' not in st.session_state:
+    # Run the analysis
+    temp_month = st.session_state.get('temp_selected_month', '')
+    temp_company = st.session_state.get('temp_selected_company', '')
+    temp_target = st.session_state.get('temp_target_company', None)
+    temp_features = st.session_state.get('temp_selected_features', [])
+
+    # Load appropriate data
+    if temp_month:
+        df = load_data(start_date=temp_month, end_date=temp_month)
+    else:
+        df = load_data()
+
+    if temp_target is not None and temp_features:
+        with st.spinner("Running peer analysis..."):
+            # Get n_peers from current slider value or default
+            default_n_peers = min(10, 50)
+
+            peer_companies, analysis_details = run_peer_analysis(
+                df, temp_target, temp_features, default_n_peers, True  # Default to most relevant
+            )
+
+            if peer_companies is not None:
+                st.session_state.peer_results = {
+                    'target_company': temp_target,
+                    'all_peer_companies': peer_companies,
+                    'selected_features': temp_features,
+                    'analysis_details': analysis_details,
+                    'selected_month': temp_month
+                }
+                # Clear temporary state now that we have results
+                keys_to_remove = ['analysis_started', 'temp_selected_month',
+                                'temp_selected_company', 'temp_target_company', 'temp_selected_features']
+                for key in keys_to_remove:
+                    if key in st.session_state:
+                        del st.session_state[key]
+                st.rerun()
+            else:
+                # Clear analysis state if analysis fails
+                keys_to_remove = ['analysis_started', 'temp_selected_month',
+                                'temp_selected_company', 'temp_target_company', 'temp_selected_features']
+                for key in keys_to_remove:
+                    if key in st.session_state:
+                        del st.session_state[key]
+                st.rerun()
 
 # Main content area
 if selected_company and target_company is not None:
     # Display target company info
     st.subheader(f"🎯 Target Company: {selected_company}")
-
-    # Show selected time period
-    if selected_month != "All Data":
-        st.info(f"📅 Analysis for time period: **{selected_month}**")
 
     col1, col2, col3 = st.columns(3)
 
@@ -361,24 +489,48 @@ if selected_company and target_company is not None:
     # Display results if available
     if 'peer_results' in st.session_state:
         results = st.session_state.peer_results
-        peer_companies = results['peer_companies']
+
+        # Filter peer companies based on current settings
+        all_peer_companies = results['all_peer_companies']
+        peer_companies = filter_peer_results(all_peer_companies, results['analysis_details'], n_peers, use_most_relevant)
+
         selected_features = results['selected_features']
 
-        st.subheader(f'📊 {"Most" if use_most_relevant else "Least"} Relevant Peer Companies')
+        st.subheader(f'📝 {"Most" if use_most_relevant else "Least"} Relevant Peer Companies')
 
         # Create display dataframe with target company included
-        display_cols = ['COMPANY_NAME', 'relevance_score'] # Removed 'TICKER'
-        if 'INDUSTRY_SECTOR_W_BIOTECH' in peer_companies.columns:
-            display_cols.append('INDUSTRY_SECTOR_W_BIOTECH')
-        if 'MARKET_CAP_FISCAL' in peer_companies.columns:
-            display_cols.append('MARKET_CAP_FISCAL')
+        display_cols = ['COMPANY_NAME', 'RELEVANCE_SCORE', 'SIMILARITY_SCORE', 'INFORMATIVENESS_SCORE', 'MARKET_CAP_FISCAL']
 
         # Add selected features to display
         display_cols.extend([col for col in selected_features if col in peer_companies.columns])
 
         # Create target company row with same structure as peer companies
         target_row = target_company.copy()
-        target_row['relevance_score'] = 'TARGET'  # Special marker for target company
+
+        # Get actual scores for target company from analysis results
+        analysis_details = results['analysis_details']
+
+        # FIXME
+        # Target company has maximum relevance (1.0) to itself
+        target_row['RELEVANCE_SCORE'] = 1.0
+
+        # Add actual similarity and informativeness scores if they exist
+        if 'SIMILARITY_SCORE' in peer_companies.columns:
+            # Target company has maximum similarity (1.0) to itself
+            target_row['SIMILARITY_SCORE'] = 1.0
+
+        if 'INFORMATIVENESS_SCORE' in peer_companies.columns:
+            # Use info_i (informativeness of target) from prediction details
+            if 'info_i' in analysis_details:
+                target_informativeness = analysis_details['info_i']
+                if hasattr(target_informativeness, 'flatten'):
+                    target_informativeness = target_informativeness.flatten()[0]
+                elif isinstance(target_informativeness, (list, np.ndarray)):
+                    target_informativeness = target_informativeness[0]
+                target_row['INFORMATIVENESS_SCORE'] = target_informativeness
+            else:
+                # Fallback - use average of peer informativeness or 1.0
+                target_row['INFORMATIVENESS_SCORE'] = 1.0
 
         # Combine target company with peer companies
         combined_df = pd.concat([target_row.to_frame().T, peer_companies], ignore_index=True)
@@ -386,29 +538,34 @@ if selected_company and target_company is not None:
         # Format the dataframe for display
         display_df = combined_df[display_cols].copy()
 
-        # Format relevance scores (except for target)
-        for idx, score in enumerate(display_df['relevance_score']):
-            if score != 'TARGET':
-                display_df.loc[idx, 'relevance_score'] = round(float(score), 4)
+        # Format all scores (including target)
+        for idx in range(len(display_df)):
+            # Format relevance score
+            relevance_score = display_df.loc[idx, 'RELEVANCE_SCORE']
+            display_df.loc[idx, 'RELEVANCE_SCORE'] = round(float(relevance_score), 4)
+
+            sim_score = display_df.loc[idx, 'SIMILARITY_SCORE']
+            display_df.loc[idx, 'SIMILARITY_SCORE'] = round(float(sim_score), 4)
+
+            info_score = display_df.loc[idx, 'INFORMATIVENESS_SCORE']
+            display_df.loc[idx, 'INFORMATIVENESS_SCORE'] = round(float(info_score), 4)
 
         if 'MARKET_CAP_FISCAL' in display_df.columns:
             display_df['MARKET_CAP_FISCAL'] = display_df['MARKET_CAP_FISCAL'].apply(
                 lambda x: f"${x:,.0f}M" if pd.notna(x) and x != 'TARGET' else "N/A"
             )
 
-        # Style the dataframe to highlight the target company
+        # Style the dataframe to highlight the target company (first row)
         def highlight_target(row):
-            if row['relevance_score'] == 'TARGET':
-                return ['background-color: #ffeb3b; font-weight: bold'] * len(row)
+            # Target company is always the first row (index 0)
+            if row.name == 0:
+                return ['background-color: #ff4b4b; font-weight: bold'] * len(row)
             else:
                 return [''] * len(row)
 
         styled_df = display_df.style.apply(highlight_target, axis=1)
 
         st.dataframe(styled_df, use_container_width=True)
-
-        # Add a note about the highlighting
-        st.caption("🎯 **Yellow highlighted row** is the target company")
 
         # Feature comparison chart
         st.subheader("📈 Feature Comparison")
@@ -423,8 +580,8 @@ if selected_company and target_company is not None:
                 target_row[feature] = target_company[feature] if feature in target_company.index else np.nan
             comparison_data.append(target_row)
 
-            # Add peer companies (top 5 for readability)
-            for idx, (_, peer) in enumerate(peer_companies.head(5).iterrows()):
+            # Add peer companies
+            for idx, (_, peer) in enumerate(peer_companies.iterrows()):
                 peer_row = {'Company': peer['COMPANY_NAME'], 'Type': f'Peer {idx+1}'}
                 for feature in selected_features:
                     peer_row[feature] = peer[feature] if feature in peer.index else np.nan
@@ -463,23 +620,20 @@ else:
     # Show data overview
     st.subheader("📋 Dataset Overview")
 
-    # Show selected time period
-    if selected_month != "All Data":
-        st.info(f"📅 Current view filtered to: **{selected_month}**")
-
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
 
     with col1:
         st.metric("Total Rows", f"{len(df):,}")
     with col2:
-        st.metric("Available Features", len(get_numerical_columns(df)))
-        print(get_numerical_columns(df))
+        st.metric("Total Companies", f"{df['COMPANY_ID'].nunique():,}")
     with col3:
+        st.metric("Available Features", len(get_numerical_columns(df)))
+    with col4:
         if 'INDUSTRY_SECTOR_W_BIOTECH' in df.columns:
             st.metric("Industries", df['INDUSTRY_SECTOR_W_BIOTECH'].nunique())
 
     # Show sample data
-    st.subheader("📊 Sample Data")
+    st.subheader("📃 Sample Data")
 
     # Add controls for data exploration
     col1, col2 = st.columns(2)
@@ -572,31 +726,31 @@ else:
             height=400
         )
 
-        # Option to download the current filtered/sorted dataset
-        col_download1, col_download2 = st.columns(2)
+        # # Option to download the current filtered/sorted dataset
+        # col_download1, col_download2 = st.columns(2)
 
-        with col_download1:
-            if st.button("📥 Download Filtered Data (CSV)"):
-                csv_data = filtered_df.to_csv(index=False)
-                st.download_button(
-                    label="Click to Download Filtered Data",
-                    data=csv_data,
-                    file_name=f"filtered_data_{selected_month.replace(' ', '_') if selected_month != 'All Data' else 'full'}.csv",
-                    mime="text/csv"
-                )
+        # with col_download1:
+        #     if st.button("📥 Download Filtered Data (CSV)"):
+        #         csv_data = filtered_df.to_csv(index=False)
+        #         st.download_button(
+        #             label="Click to Download Filtered Data",
+        #             data=csv_data,
+        #             file_name=f"filtered_data_{selected_month.replace(' ', '_') if selected_month != '' else 'all'}.csv",
+        #             mime="text/csv"
+        #         )
 
-        with col_download2:
-            if st.button("📥 Download Full Dataset (CSV)"):
-                csv_data = df.to_csv(index=False)
-                st.download_button(
-                    label="Click to Download Full Dataset",
-                    data=csv_data,
-                    file_name=f"company_data_{selected_month.replace(' ', '_') if selected_month != 'All Data' else 'full'}.csv",
-                    mime="text/csv"
-                )
+        # with col_download2:
+        #     if st.button("📥 Download Full Dataset (CSV)"):
+        #         csv_data = df.to_csv(index=False)
+        #         st.download_button(
+        #             label="Click to Download Full Dataset",
+        #             data=csv_data,
+        #             file_name=f"company_data_{selected_month.replace(' ', '_') if selected_month != '' else 'all'}.csv",
+        #             mime="text/csv"
+        #         )
     else:
         st.warning("Please select at least one column to display")
 
 # Footer
 st.markdown("---")
-st.markdown("*Powered by Relevance-Based Prediction (RBP) methodology*")
+st.markdown("*Designed by Aarna Pal-Yadav*")

@@ -401,7 +401,7 @@ if selected_company:
             min_value=3,
             max_value=max_possible_peers,
             value=min(10, max_possible_peers),
-            help="Number of most similar companies to find",
+            help="Size of peer group to find",
             disabled=analysis_in_progress and not has_results
         )
 
@@ -798,28 +798,6 @@ else:
             height=400
         )
 
-        # # Option to download the current filtered/sorted dataset
-        # col_download1, col_download2 = st.columns(2)
-
-        # with col_download1:
-        #     if st.button("📥 Download Filtered Data (CSV)"):
-        #         csv_data = filtered_df.to_csv(index=False)
-        #         st.download_button(
-        #             label="Click to Download Filtered Data",
-        #             data=csv_data,
-        #             file_name=f"filtered_data_{selected_month.replace(' ', '_') if selected_month != '' else 'all'}.csv",
-        #             mime="text/csv"
-        #         )
-
-        # with col_download2:
-        #     if st.button("📥 Download Full Dataset (CSV)"):
-        #         csv_data = df.to_csv(index=False)
-        #         st.download_button(
-        #             label="Click to Download Full Dataset",
-        #             data=csv_data,
-        #             file_name=f"company_data_{selected_month.replace(' ', '_') if selected_month != '' else 'all'}.csv",
-        #             mime="text/csv"
-        #         )
     else:
         st.warning("Please select at least one column to display")
 

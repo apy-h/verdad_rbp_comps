@@ -243,6 +243,30 @@ def validate_features_for_analysis(df: pd.DataFrame, features: List[str]) -> tup
 
     return len(issues) == 0, issues
 
+def get_default_features(df: pd.DataFrame, preferred_features: List[str], target_count: int = 5) -> List[str]:
+    """Get default features prioritizing preferred list, then filling with other numerical columns"""
+    # Get all available numerical columns
+    numerical_cols = get_numerical_columns(df)
+
+    # Find which preferred features are available in the dataset
+    available_preferred = [feat for feat in preferred_features if feat in numerical_cols]
+
+    # If we have enough or more preferred features than target_count, use all available preferred features
+    if len(available_preferred) >= target_count:
+        return available_preferred
+
+    # If we have fewer preferred features than target_count, add other numerical columns to reach target_count
+    default_features = available_preferred.copy()
+
+    # Add remaining features from numerical_cols that aren't in preferred list
+    remaining_features = [col for col in numerical_cols if col not in preferred_features]
+
+    # Add features until we reach target_count or run out of features
+    needed_count = target_count - len(default_features)
+    default_features.extend(remaining_features[:needed_count])
+
+    return default_features
+
 def filter_peer_results(all_peer_companies, n_peers, use_most_relevant):
     """Filter peer results based on current settings without recalculating RBP"""
     if len(all_peer_companies) == 0:
@@ -261,6 +285,22 @@ def filter_peer_results(all_peer_companies, n_peers, use_most_relevant):
 # Main UI
 st.title("🏢 Company Peer Analysis Dashboard")
 st.write("Find the most relevant comp set for a company of interest using relevance-based prediction (RBP).")
+
+# Define preferred features for analysis
+PREFERRED_FEATURES = [
+    "D_ME_FCF_EBITDA",
+    "D_ME_EBITDA_GP",
+    "D_ME_GP_REV",
+    "D_ME_DEBT_MARKET_CAP",
+    "VOLATILITY",
+    "EARNINGS_VOLATILITY",
+    "D_ME_LOG_ASSETS",
+    "D_ME_GR_REV",
+    "D_ME_GR_EBITDA",
+    "D_ME_GR_NI",
+    "D_ME_GR_ASSETS",
+    "D_ME_GP_ASSETS"
+]
 
 # Sidebar configuration
 st.sidebar.header("🔧 Analysis Configuration")
@@ -341,11 +381,13 @@ if selected_company:
         else:
             # Feature selection
             numerical_cols = get_numerical_columns(df)
+            default_features = get_default_features(df, PREFERRED_FEATURES, target_count=5)
+
             selected_features = st.sidebar.multiselect(
                 "Select Features for Analysis",
                 options=numerical_cols,
-                default=numerical_cols[:5] if len(numerical_cols) >= 5 else numerical_cols,
-                help="Choose the financial metrics to use for finding similar companies"
+                default=default_features,
+                help="Choose the financial metrics to use for finding similar companies. Preferred features are pre-selected when available."
             )
 
         # Number of peers - always interactive (unless analysis is in progress)

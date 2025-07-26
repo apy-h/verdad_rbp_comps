@@ -455,8 +455,8 @@ if selected_company:
             else:
                 current_features = st.session_state.get('temp_selected_features', [])
                 current_target_multiple = st.session_state.get('temp_target_multiple', 'D_VALUE_BBG_EBITDA_EV')
-            st.sidebar.info(f"📊 Features locked: {', '.join(current_features)}")
-            st.sidebar.info(f"🎯 Target multiple locked: {current_target_multiple}")
+            st.sidebar.info(f"✏️ Features locked: {', '.join(current_features)}")
+            st.sidebar.info(f"🖋️ Target multiple locked: {current_target_multiple}")
             selected_features = current_features
             selected_target_multiple = current_target_multiple
         else:
@@ -613,17 +613,15 @@ if selected_company and target_company is not None:
             icon="⚠️"
         )
 
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2 = st.columns(2)
 
     with col1:
         if 'INDUSTRY_SECTOR_W_BIOTECH' in target_company.index:
             st.metric("Industry", target_company['INDUSTRY_SECTOR_W_BIOTECH'])
-
-    with col2:
         if 'PRICE_CLOSE_USD' in target_company.index:
             st.metric("Price (Close)", f"${target_company['PRICE_CLOSE_USD']:,.2f}")
 
-    with col3:
+    with col2:
         if 'MARKET_CAP_FISCAL' in target_company.index:
             market_cap = target_company['MARKET_CAP_FISCAL']
             if pd.notna(market_cap):
@@ -631,8 +629,6 @@ if selected_company and target_company is not None:
                     st.metric("Market Cap", f"-${abs(market_cap):,.0f}M")
                 else:
                     st.metric("Market Cap", f"${market_cap:,.0f}M")
-
-    with col4:
         if 'TEV_FISCAL' in target_company.index:
             tev = target_company['TEV_FISCAL']
             if pd.notna(tev):

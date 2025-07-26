@@ -7,6 +7,8 @@ import plotly.graph_objects as go
 from helpers import prep_greg_data
 from typing import List, Optional
 
+RED = '#ff4b4b'
+
 st.set_page_config(page_title="Company Peer Analysis", layout="wide")
 
 def load_data(start_date: Optional[str] = None, end_date: Optional[str] = None):
@@ -664,7 +666,7 @@ if selected_company and target_company is not None:
         selected_features = results['selected_features']
         selected_target_multiple = results.get('target_multiple', 'D_VALUE_BBG_EBITDA_EV')
 
-        st.subheader(f'📝 {"Most" if use_most_relevant else "Least"} Relevant Peer Companies')
+        st.subheader(f'📝 {"Most" if use_most_relevant else "Least Relevant"} Peer Companies')
 
         # Create display dataframe with target company included
         display_cols = ['COMPANY_NAME', 'RELEVANCE', 'SIMILARITY', 'INFORMATIVENESS', 'MARKET_CAP_FISCAL', 'TEV_FISCAL']
@@ -698,7 +700,7 @@ if selected_company and target_company is not None:
         def highlight_target(row):
             # Target company is always the first row (index 0) when present
             if row.name == 0 and target_company_row is not None:
-                return ['background-color: #ff4b4b; color: white; font-weight: bold'] * len(row)
+                return [f'background-color: {RED}; color: white; font-weight: bold'] * len(row)
             else:
                 return [''] * len(row)
 
@@ -743,7 +745,7 @@ if selected_company and target_company is not None:
                     import plotly.graph_objects as go
 
                     # Create colors for bars - red for target company, blue for peers
-                    colors = ['#ff4b4b' if row['Type'] == 'Target' else '#1f77b4' for _, row in chart_data.iterrows()]
+                    colors = [RED if row['Type'] == 'Target' else '#1f77b4' for _, row in chart_data.iterrows()]
 
                     # Create bar chart with custom colors
                     fig = go.Figure(data=[
@@ -752,7 +754,8 @@ if selected_company and target_company is not None:
                             y=chart_data[feature_to_plot],
                             marker_color=colors,
                             text=chart_data[feature_to_plot].round(4),
-                            textposition='auto'
+                            textposition='auto',
+                            hovertemplate='<extra></extra>'  # Remove tooltip
                         )
                     ])
 

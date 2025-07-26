@@ -67,8 +67,8 @@ def find_company_row(df: pd.DataFrame, company_selection: str) -> Optional[pd.Se
     return None
 
 def run_peer_analysis(df: pd.DataFrame, target_company: pd.Series, features: List[str],
-                     n_peers: int, use_most_relevant: bool = True):
-    """Run relevance-based peer analysis"""
+                     use_most_relevant: bool = True):
+    """Run relevance-based peer analysis on ALL companies in the industry"""
 
     # Get target company's industry sector
     target_industry = target_company.get('INDUSTRY_SECTOR_W_BIOTECH', None)
@@ -94,8 +94,8 @@ def run_peer_analysis(df: pd.DataFrame, target_company: pd.Series, features: Lis
         st.error("No valid data available for selected features in the target industry sector")
         return None, None
 
-    # Check minimum data requirements
-    min_required_rows = max(10, n_peers + 5)  # Need at least n_peers + buffer
+    # Check minimum data requirements (reduced since we're analyzing all companies)
+    min_required_rows = 10
     if len(analysis_df) < min_required_rows:
         st.error(f"Insufficient data in {target_industry} sector: {len(analysis_df)} companies available, but need at least {min_required_rows} for reliable analysis")
         return None, None
@@ -135,7 +135,6 @@ def run_peer_analysis(df: pd.DataFrame, target_company: pd.Series, features: Lis
         st.error("Target company has infinite or NaN values in selected features.")
         return None, None
 
-    # TODO
     # For peer analysis, we'll use a dummy outcome variable (not predicting outcomes, just finding similarity)
     # Use market cap or first available numerical column as dummy outcome
     outcome_cols = ['MARKET_CAP_FISCAL', 'IQ_TOTAL_ASSETS', 'TEV_FISCAL']
@@ -164,13 +163,15 @@ def run_peer_analysis(df: pd.DataFrame, target_company: pd.Series, features: Lis
 
     try:
         # Add debugging info
-        st.info(f"Running analysis with {len(analysis_df)} companies in {target_industry} sector, {len(features)} features, choosing {n_peers} peers")
+        st.info(f"Running analysis with {len(analysis_df)} companies in {target_industry} sector, {len(features)} features")
 
-        # Run prediction to get relevance scores
+        # Run prediction to get ALL relevance scores (analyze all companies in the industry)
+        # Use a high threshold to get all companies
+        n_all_companies = len(analysis_df) - 1  # Exclude target company
         _, pred_details = rbp.predict(X, target_values, y,
-                                         thresh=n_peers,
-                                         most=use_most_relevant,
-                                         pct_thresh=False)
+                                     thresh=n_all_companies,
+                                     most=use_most_relevant,
+                                     pct_thresh=False)
 
         # Extract relevance scores
         relevance_scores = pred_details['relevance'].flatten()
@@ -184,24 +185,26 @@ def run_peer_analysis(df: pd.DataFrame, target_company: pd.Series, features: Lis
             st.error("No relevance scores computed. Try adjusting the threshold or features.")
             return None, None
 
+        # Exclude the target company from results (it would be the most/least relevant to itself)
         if use_most_relevant:
-            # Skip the first most relevant, then take n_peers
-            peer_indices = np.argsort(relevance_scores)[-(n_peers+1):-1][::-1]
+            # Skip the first most relevant (target company), get all others
+            peer_indices = np.argsort(relevance_scores)[:-1][::-1]  # All except last (least relevant)
         else:
-            # Skip the last least relevant, then take n_peers
-            peer_indices = np.argsort(relevance_scores)[1:n_peers+1]
+            # Skip the last least relevant (target company), get all others
+            peer_indices = np.argsort(relevance_scores)[1:]  # All except first (most relevant)
 
-        # Get peer companies
-        peer_companies = analysis_df.iloc[peer_indices].copy()
-        peer_companies['RELEVANCE_SCORE'] = relevance_scores[peer_indices]
+        # Get ALL peer companies with their scores
+        all_peer_companies = analysis_df.iloc[peer_indices].copy()
+        all_peer_companies['RELEVANCE_SCORE'] = relevance_scores[peer_indices]
 
-        # Add similarity and informativeness scores if available
-        if similarity_scores is not None:
-            peer_companies['SIMILARITY_SCORE'] = similarity_scores[peer_indices]
-        if informativeness_scores is not None:
-            peer_companies['INFORMATIVENESS_SCORE'] = informativeness_scores[peer_indices]
+        # Add similarity and informativeness scores
+        all_peer_companies['SIMILARITY_SCORE'] = similarity_scores[peer_indices]
+        all_peer_companies['INFORMATIVENESS_SCORE'] = informativeness_scores[peer_indices]
 
-        return peer_companies, pred_details
+        # Sort by relevance score for consistent ordering
+        all_peer_companies = all_peer_companies.sort_values('RELEVANCE_SCORE', ascending=False)
+
+        return all_peer_companies, pred_details
 
     except ZeroDivisionError as e:
         st.error(f"Division by zero error in RBP analysis. This might be due to insufficient data variation or extreme values in {target_industry} sector. Try selecting different features or a different time period.")
@@ -240,21 +243,18 @@ def validate_features_for_analysis(df: pd.DataFrame, features: List[str]) -> tup
 
     return len(issues) == 0, issues
 
-# FIXME
-def filter_peer_results(all_peer_companies, analysis_details, n_peers, use_most_relevant):
+def filter_peer_results(all_peer_companies, n_peers, use_most_relevant):
     """Filter peer results based on current settings without recalculating RBP"""
     if len(all_peer_companies) == 0:
         return all_peer_companies
 
-    # Get all relevance scores and sort indices
-    relevance_scores = all_peer_companies['RELEVANCE_SCORE'].values
-
+    # The all_peer_companies is already sorted by relevance score (descending)
     if use_most_relevant:
-        # Get top n_peers (already sorted in descending order during initial analysis)
+        # Get top n_peers (highest relevance scores)
         filtered_peers = all_peer_companies.head(n_peers)
     else:
-        # Get bottom n_peers (reverse the order)
-        filtered_peers = all_peer_companies.tail(n_peers).iloc[::-1]
+        # Get bottom n_peers (lowest relevance scores)
+        filtered_peers = all_peer_companies.tail(n_peers).iloc[::-1]  # Reverse to show least relevant first
 
     return filtered_peers
 
@@ -431,18 +431,16 @@ if 'analysis_started' in st.session_state and 'peer_results' not in st.session_s
         df = load_data()
 
     if temp_target is not None and temp_features:
-        with st.spinner("Running peer analysis..."):
-            # Get n_peers from current slider value or default
-            default_n_peers = min(10, 50)
-
-            peer_companies, analysis_details = run_peer_analysis(
-                df, temp_target, temp_features, default_n_peers, True  # Default to most relevant
+        with st.spinner("Running peer analysis on all companies in industry..."):
+            # Run analysis on ALL companies in the industry
+            all_peer_companies, analysis_details = run_peer_analysis(
+                df, temp_target, temp_features, True  # Default to most relevant for initial analysis
             )
 
-            if peer_companies is not None:
+            if all_peer_companies is not None:
                 st.session_state.peer_results = {
                     'target_company': temp_target,
-                    'all_peer_companies': peer_companies,
+                    'all_peer_companies': all_peer_companies,  # Store ALL analyzed companies
                     'selected_features': temp_features,
                     'analysis_details': analysis_details,
                     'selected_month': temp_month
@@ -492,7 +490,7 @@ if selected_company and target_company is not None:
 
         # Filter peer companies based on current settings
         all_peer_companies = results['all_peer_companies']
-        peer_companies = filter_peer_results(all_peer_companies, results['analysis_details'], n_peers, use_most_relevant)
+        peer_companies = filter_peer_results(all_peer_companies, n_peers, use_most_relevant)
 
         selected_features = results['selected_features']
 

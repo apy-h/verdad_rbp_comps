@@ -66,8 +66,13 @@ def find_company_row(df: pd.DataFrame, company_selection: str) -> Optional[pd.Se
         return matches.iloc[0]
     return None
 
+def get_target_multiple_options(df: pd.DataFrame) -> List[str]:
+    """Get columns that start with D_VALUE_BBG_ for target multiple selection"""
+    d_value_bbg_cols = [col for col in df.columns if col.startswith('D_VALUE_BBG_')]
+    return sorted(d_value_bbg_cols)
+
 def run_peer_analysis(df: pd.DataFrame, target_company: pd.Series, features: List[str],
-                     use_most_relevant: bool = True):
+                     use_most_relevant: bool = True, target_multiple: str = 'D_VALUE_BBG_EBITDA_EV'):
     """Run relevance-based peer analysis on ALL companies in the industry"""
 
     # Get target company's industry sector
@@ -135,24 +140,29 @@ def run_peer_analysis(df: pd.DataFrame, target_company: pd.Series, features: Lis
         st.error("Target company has infinite or NaN values in selected features.")
         return None, None
 
-    # For peer analysis, we'll use a dummy outcome variable (not predicting outcomes, just finding similarity)
-    # Use market cap or first available numerical column as dummy outcome
-    outcome_cols = ['MARKET_CAP_FISCAL', 'IQ_TOTAL_ASSETS', 'TEV_FISCAL']
-    y_col = None
-    for col in outcome_cols:
-        if col in analysis_df.columns:
-            y_col = col
-            break
+    # Use the selected target multiple as the outcome variable for RBP
+    if target_multiple in analysis_df.columns:
+        y_col = target_multiple
+    else:
+        # Fallback to other outcome columns if target multiple not available
+        outcome_cols = ['MARKET_CAP_FISCAL', 'IQ_TOTAL_ASSETS', 'TEV_FISCAL']
+        y_col = None
+        for col in outcome_cols:
+            if col in analysis_df.columns:
+                y_col = col
+                break
 
-    if y_col is None:
-        # Use first numerical column as fallback
-        numerical_cols = analysis_df.select_dtypes(include=[np.number]).columns
-        available_cols = [col for col in numerical_cols if col not in features]
-        if len(available_cols) > 0:
-            y_col = available_cols[0]
-        else:
-            st.error("No suitable outcome variable found")
-            return None, None
+        if y_col is None:
+            # Use first numerical column as fallback
+            numerical_cols = analysis_df.select_dtypes(include=[np.number]).columns
+            available_cols = [col for col in numerical_cols if col not in features]
+            if len(available_cols) > 0:
+                y_col = available_cols[0]
+            else:
+                st.error("No suitable outcome variable found")
+                return None, None
+
+        st.warning(f"Selected target multiple '{target_multiple}' not available. Using '{y_col}' instead.")
 
     y = analysis_df[y_col].values.reshape(-1, 1)
 
@@ -163,7 +173,7 @@ def run_peer_analysis(df: pd.DataFrame, target_company: pd.Series, features: Lis
 
     try:
         # Add debugging info
-        st.info(f"Running analysis with {len(analysis_df)} companies in {target_industry} sector, {len(features)} features")
+        st.info(f"Running analysis with {len(analysis_df)} companies in {target_industry} sector, {len(features)} features, target multiple: {y_col}")
 
         # Run prediction to get ALL relevance scores (analyze all companies in the industry)
         # Use a high threshold to get all companies
@@ -187,12 +197,12 @@ def run_peer_analysis(df: pd.DataFrame, target_company: pd.Series, features: Lis
 
         # Get ALL companies with their scores (including target company)
         all_companies = analysis_df.copy()
-        all_companies['RELEVANCE_SCORE'] = relevance_scores
-        all_companies['SIMILARITY_SCORE'] = similarity_scores
-        all_companies['INFORMATIVENESS_SCORE'] = informativeness_scores
+        all_companies['RELEVANCE'] = relevance_scores
+        all_companies['SIMILARITY'] = similarity_scores
+        all_companies['INFORMATIVENESS'] = informativeness_scores
 
         # Sort by relevance score for consistent ordering (target should be at the top)
-        all_companies = all_companies.sort_values('RELEVANCE_SCORE', ascending=False)
+        all_companies = all_companies.sort_values('RELEVANCE', ascending=False)
 
         # Find the target company in the results
         target_company_name = target_company.get('COMPANY_NAME', '')
@@ -372,10 +382,14 @@ if selected_company:
             # Show current features but disable changing them
             if has_results:
                 current_features = st.session_state.peer_results['selected_features']
+                current_target_multiple = st.session_state.peer_results.get('target_multiple', 'D_VALUE_BBG_EBITDA_EV')
             else:
                 current_features = st.session_state.get('temp_selected_features', [])
+                current_target_multiple = st.session_state.get('temp_target_multiple', 'D_VALUE_BBG_EBITDA_EV')
             st.sidebar.info(f"📊 Features locked: {', '.join(current_features)}")
+            st.sidebar.info(f"🎯 Target multiple locked: {current_target_multiple}")
             selected_features = current_features
+            selected_target_multiple = current_target_multiple
         else:
             # Feature selection
             numerical_cols = get_numerical_columns(df)
@@ -386,6 +400,17 @@ if selected_company:
                 options=numerical_cols,
                 default=default_features,
                 help="Choose the financial metrics to use for finding similar companies. Preferred features are pre-selected when available."
+            )
+
+            # Target multiple selection
+            target_multiple_options = get_target_multiple_options(df)
+            default_target_multiple = 'D_VALUE_BBG_EBITDA_EV' if 'D_VALUE_BBG_EBITDA_EV' in target_multiple_options else (target_multiple_options[0] if target_multiple_options else 'MARKET_CAP_FISCAL')
+
+            selected_target_multiple = st.sidebar.selectbox(
+                "Select Target Multiple",
+                options=target_multiple_options if target_multiple_options else ['MARKET_CAP_FISCAL'],
+                index=target_multiple_options.index(default_target_multiple) if default_target_multiple in target_multiple_options else 0,
+                help="Choose the target multiple for RBP analysis. This doesn't affect peer group selection but is necessary for the RBP algorithm to function properly."
             )
 
         # Number of peers - always interactive (unless analysis is in progress)
@@ -417,7 +442,7 @@ if selected_company:
             if st.sidebar.button("🔄 Start New Analysis", type="secondary"):
                 # Clear all analysis states to unfreeze controls
                 keys_to_remove = ['peer_results', 'analysis_started', 'temp_selected_month',
-                                'temp_selected_company', 'temp_target_company', 'temp_selected_features']
+                                'temp_selected_company', 'temp_target_company', 'temp_selected_features', 'temp_target_multiple']
                 for key in keys_to_remove:
                     if key in st.session_state:
                         del st.session_state[key]
@@ -437,6 +462,7 @@ if selected_company:
                     st.session_state.temp_selected_company = selected_company
                     st.session_state.temp_target_company = target_company
                     st.session_state.temp_selected_features = selected_features
+                    st.session_state.temp_target_multiple = selected_target_multiple
 
                     # Validate features before running analysis
                     features_valid, feature_issues = validate_features_for_analysis(df, selected_features)
@@ -448,7 +474,7 @@ if selected_company:
                         st.info("Try selecting different features or a different time period.")
                         # Clear analysis state if validation fails
                         keys_to_remove = ['analysis_started', 'temp_selected_month',
-                                        'temp_selected_company', 'temp_target_company', 'temp_selected_features']
+                                        'temp_selected_company', 'temp_target_company', 'temp_selected_features', 'temp_target_multiple']
                         for key in keys_to_remove:
                             if key in st.session_state:
                                 del st.session_state[key]
@@ -463,6 +489,7 @@ if 'analysis_started' in st.session_state and 'peer_results' not in st.session_s
     temp_company = st.session_state.get('temp_selected_company', '')
     temp_target = st.session_state.get('temp_target_company', None)
     temp_features = st.session_state.get('temp_selected_features', [])
+    temp_target_multiple = st.session_state.get('temp_target_multiple', 'D_VALUE_BBG_EBITDA_EV')
 
     # Load appropriate data
     if temp_month:
@@ -474,7 +501,7 @@ if 'analysis_started' in st.session_state and 'peer_results' not in st.session_s
         with st.spinner("Running peer analysis on all companies in industry..."):
             # Run analysis on ALL companies in the industry
             all_peer_companies, analysis_details = run_peer_analysis(
-                df, temp_target, temp_features, True  # Default to most relevant for initial analysis
+                df, temp_target, temp_features, True, temp_target_multiple  # Pass target multiple
             )
 
             if all_peer_companies is not None:
@@ -482,12 +509,13 @@ if 'analysis_started' in st.session_state and 'peer_results' not in st.session_s
                     'target_company': temp_target,
                     'all_peer_companies': all_peer_companies,  # Store ALL analyzed companies
                     'selected_features': temp_features,
+                    'target_multiple': temp_target_multiple,  # Store target multiple
                     'analysis_details': analysis_details,
                     'selected_month': temp_month
                 }
                 # Clear temporary state now that we have results
                 keys_to_remove = ['analysis_started', 'temp_selected_month',
-                                'temp_selected_company', 'temp_target_company', 'temp_selected_features']
+                                'temp_selected_company', 'temp_target_company', 'temp_selected_features', 'temp_target_multiple']
                 for key in keys_to_remove:
                     if key in st.session_state:
                         del st.session_state[key]
@@ -495,7 +523,7 @@ if 'analysis_started' in st.session_state and 'peer_results' not in st.session_s
             else:
                 # Clear analysis state if analysis fails
                 keys_to_remove = ['analysis_started', 'temp_selected_month',
-                                'temp_selected_company', 'temp_target_company', 'temp_selected_features']
+                                'temp_selected_company', 'temp_target_company', 'temp_selected_features', 'temp_target_multiple']
                 for key in keys_to_remove:
                     if key in st.session_state:
                         del st.session_state[key]
@@ -570,7 +598,7 @@ if selected_company and target_company is not None:
         st.subheader(f'📝 {"Most" if use_most_relevant else "Least"} Relevant Peer Companies')
 
         # Create display dataframe with target company included
-        display_cols = ['COMPANY_NAME', 'RELEVANCE_SCORE', 'SIMILARITY_SCORE', 'INFORMATIVENESS_SCORE', 'MARKET_CAP_FISCAL']
+        display_cols = ['COMPANY_NAME', 'RELEVANCE', 'SIMILARITY', 'INFORMATIVENESS', 'MARKET_CAP_FISCAL']
 
         # Add selected features to display
         display_cols.extend([col for col in selected_features if col in all_companies.columns])
@@ -585,7 +613,7 @@ if selected_company and target_company is not None:
         display_df = combined_df[display_cols].copy()
 
         # Format all scores
-        score_columns = ['RELEVANCE_SCORE', 'SIMILARITY_SCORE', 'INFORMATIVENESS_SCORE']
+        score_columns = ['RELEVANCE', 'SIMILARITY', 'INFORMATIVENESS']
         for col in score_columns:
             if col in display_df.columns:
                 display_df[col] = display_df[col].apply(lambda x: round(float(x), 4))
@@ -793,4 +821,4 @@ else:
 
 # Footer
 st.markdown("---")
-st.markdown("*Designed by Aarna Pal-Yadav*")
+st.markdown("*Designed by Aarna Pal-Yadav.*")

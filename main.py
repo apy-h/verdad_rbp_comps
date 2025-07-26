@@ -288,18 +288,18 @@ st.write("Find the most relevant comp set for a company of interest using releva
 
 # Define preferred features for analysis
 PREFERRED_FEATURES = [
-    "D_ME_FCF_EBITDA",
-    "D_ME_EBITDA_GP",
-    "D_ME_GP_REV",
-    "D_ME_DEBT_MARKET_CAP",
+    "D_APY_FCF_EBITDA",
+    "D_APY_EBITDA_GP",
+    "D_APY_GP_REV",
+    "D_APY_DEBT_MARKET_CAP",
     "VOLATILITY",
     "EARNINGS_VOLATILITY",
-    "D_ME_LOG_ASSETS",
-    "D_ME_GR_REV",
-    "D_ME_GR_EBITDA",
-    "D_ME_GR_NI",
-    "D_ME_GR_ASSETS",
-    "D_ME_GP_ASSETS"
+    "D_APY_LOG_ASSETS",
+    "D_APY_GR_REV",
+    "D_APY_GR_EBITDA",
+    "D_APY_GR_NI",
+    "D_APY_GR_ASSETS",
+    "D_APY_GP_ASSETS"
 ]
 
 # Sidebar configuration
@@ -707,8 +707,8 @@ else:
             "COMPANY_NAME",
             "INDUSTRY_SECTOR_W_BIOTECH",
             "IQ_TOTAL_REV",
-            "D_ME_GR_REV",
-            "D_ME_GP_REV",
+            "D_APY_GR_REV",
+            "D_APY_GP_REV",
             "IQ_EBITDA",
             "IQ_NI",
             "IQ_TOTAL_ASSETS",

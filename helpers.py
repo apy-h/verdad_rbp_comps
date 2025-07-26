@@ -108,7 +108,7 @@ def add_ratio_column(
     col2: str
 ) -> None:
     """
-    Adds a new column to the DataFrame named "D_ME_{col1}_{col2}" (removing any 'IQ_' or 'D_ME_' prefix and '_FISCAL' suffix from col1/col2).
+    Adds a new column to the DataFrame named "D_APY_{col1}_{col2}" (removing any 'IQ_' or 'D_APY_' prefix and '_FISCAL' suffix from col1/col2).
     The new column's value is df[col1] / df[col2] if df[col2] != 0, else df[col1].
 
     Parameters:
@@ -120,7 +120,7 @@ def add_ratio_column(
         None
     """
     def clean_col_name(col):
-        for prefix in ["IQ_", "D_ME_", "TOTAL_"]:
+        for prefix in ["IQ_", "D_APY_", "TOTAL_"]:
             if col.startswith(prefix):
                 col = col.removeprefix(prefix)
         for suffix in ["_FISCAL", "_FLOORED"]:
@@ -131,7 +131,7 @@ def add_ratio_column(
     col1_clean = clean_col_name(col1)
     col2_clean = clean_col_name(col2)
 
-    new_col = f"D_ME_{col1_clean}_{col2_clean}"
+    new_col = f"D_APY_{col1_clean}_{col2_clean}"
     df[new_col] = df.apply(
         lambda row: row[col1] / row[col2] if row[col2] != 0 else row[col1],
         axis=1
@@ -143,7 +143,7 @@ def add_growth_column(
     col: str
 ) -> None:
     """
-    Adds a new column to the DataFrame named "D_ME_GR_{col}".
+    Adds a new column to the DataFrame named "D_APY_GR_{col}".
     Logic:
         - If both col and col_LAG1Y are 0, set to 0.
         - If col_LAG1Y is 0 (but col is not), set to mean(col) + 30 * std(col).
@@ -160,7 +160,7 @@ def add_growth_column(
     std_val = df[col].std(skipna=True)
     mean_val = df[col].mean(skipna=True)
     col_tmp = col.removeprefix('IQ_')
-    new_col = f"D_ME_GR_{col_tmp.removeprefix('TOTAL_')}"
+    new_col = f"D_APY_GR_{col_tmp.removeprefix('TOTAL_')}"
 
 
     df[new_col] = df.apply(
@@ -183,7 +183,7 @@ def prep_greg_data(start_date: Optional[str] = None,
         - Optionally filters data between start_date and end_date if provided.
         - Removes rows where 'IQ_EBITDA' null/infinite, and where 'MARKET_CAP_FISCAL' is less than 100.
         - Adds floored columns for 'IQ_TOTAL_DEBT' and 'IQ_TOTAL_ASSETS' (minimum value of 1).
-        - Computes free cash flow ('D_ME_FCF') and log of floored assets ('D_ME_LOG_ASSETS').
+        - Computes free cash flow ('D_APY_FCF') and log of floored assets ('D_APY_LOG_ASSETS').
         - Adds several ratio columns for financial metrics.
         - Adds growth columns for revenue, EBITDA, net income, and total assets.
         - Creates INDUSTRY_SECTOR_W_BIOTECH column with biotechnology classification.
@@ -239,11 +239,11 @@ def prep_greg_data(start_date: Optional[str] = None,
     add_floored_column(df, "IQ_TOTAL_DEBT", 1)
     add_floored_column(df, "IQ_TOTAL_ASSETS", 1)
 
-    df["D_ME_FCF"] = df["IQ_CASH_OPER"] - df["IQ_CAPEX"]
-    df["D_ME_LOG_ASSETS"] = np.log(df["IQ_TOTAL_ASSETS_FLOORED"])
+    df["D_APY_FCF"] = df["IQ_CASH_OPER"] - df["IQ_CAPEX"]
+    df["D_APY_LOG_ASSETS"] = np.log(df["IQ_TOTAL_ASSETS_FLOORED"])
 
     add_ratio_column(df, "IQ_EBITDA", "TEV_FISCAL")
-    add_ratio_column(df, "D_ME_FCF", "IQ_EBITDA")
+    add_ratio_column(df, "D_APY_FCF", "IQ_EBITDA")
     add_ratio_column(df, "IQ_EBITDA", "IQ_GP")
     add_ratio_column(df, "IQ_GP", "IQ_TOTAL_REV")
     add_ratio_column(df, "IQ_TOTAL_DEBT", "MARKET_CAP_FISCAL")

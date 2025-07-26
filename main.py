@@ -71,6 +71,72 @@ def get_target_multiple_options(df: pd.DataFrame) -> List[str]:
     d_value_bbg_cols = [col for col in df.columns if col.startswith('D_VALUE_BBG_')]
     return sorted(d_value_bbg_cols)
 
+def format_dataframe_for_display(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Apply consistent formatting rules to dataframe columns for display.
+
+    Formatting rules:
+    - DAY_DATE: year-month-day format
+    - IQ_*, D_APY_FCF*, D_APY_LOG_ASSETS*, MARKET_CAP_FISCAL, TEV_FISCAL: ${x:,.0f}M format (negative sign outside $)
+    - PRICE_CLOSE_USD: ${x:,.2f} format (negative sign outside $)
+    - *_RET, D_APY_GP_REV, D_APY_GR_*: decimal to percentage with 2 decimal points
+    - SECTOR_*: 0 or 1, no decimal points
+    - Everything else: 4 decimal points
+    """
+    display_df = df.copy()
+
+    for col in display_df.columns:
+        if col in display_df.columns and len(display_df) > 0:
+            try:
+                # DAY_DATE formatting
+                if col == 'DAY_DATE':
+                    display_df[col] = pd.to_datetime(display_df[col], errors='coerce').dt.strftime('%Y-%m-%d')
+                    display_df[col] = display_df[col].fillna('N/A')
+
+                # Dollar amounts in millions: IQ_*, D_APY_FCF*, D_APY_LOG_ASSETS*, MARKET_CAP_FISCAL, TEV_FISCAL
+                elif (col.startswith('IQ_') or
+                      col.startswith('D_APY_FCF') or
+                      col.startswith('D_APY_LOG_ASSETS') or
+                      col in ['MARKET_CAP_FISCAL', 'TEV_FISCAL']):
+                    display_df[col] = display_df[col].apply(
+                        lambda x: f"-${abs(x):,.0f}M" if pd.notna(x) and x < 0 else f"${x:,.0f}M" if pd.notna(x) else "N/A"
+                    )
+
+                # Dollar amounts: PRICE_CLOSE_USD
+                elif col == 'PRICE_CLOSE_USD':
+                    display_df[col] = display_df[col].apply(
+                        lambda x: f"-${abs(x):,.2f}" if pd.notna(x) and x < 0 else f"${x:,.2f}" if pd.notna(x) else "N/A"
+                    )
+
+                # Percentage formatting (from decimal): *_RET, D_APY_GP_REV, D_APY_GR_*
+                elif (col.endswith('_RET') or
+                      col == 'D_APY_GP_REV' or
+                      col.startswith('D_APY_GR_')):
+                    display_df[col] = display_df[col].apply(
+                        lambda x: f"{x*100:.2f}%" if pd.notna(x) else "N/A"
+                    )
+
+                # Integer formatting: SECTOR_*
+                elif col.startswith('SECTOR_'):
+                    display_df[col] = display_df[col].apply(
+                        lambda x: f"{int(x)}" if pd.notna(x) else "N/A"
+                    )
+
+                # Everything else: 4 decimal places (for numerical columns)
+                else:
+                    # Only format if it's a numerical column
+                    if pd.api.types.is_numeric_dtype(display_df[col]):
+                        display_df[col] = display_df[col].apply(
+                            lambda x: f"{x:.4f}" if pd.notna(x) else "N/A"
+                        )
+
+            except Exception as e:
+                # If formatting fails for any column, keep original values
+                st.warning(f"Could not format column '{col}': {str(e)}")
+                continue
+
+    return display_df
+
 def run_peer_analysis(df: pd.DataFrame, target_company: pd.Series, features: List[str],
                      use_most_relevant: bool = True, target_multiple: str = 'D_VALUE_BBG_EBITDA_EV'):
     """Run relevance-based peer analysis on ALL companies in the industry"""
@@ -614,26 +680,17 @@ if selected_company and target_company is not None:
         else:
             combined_df = filtered_peers
 
-        # Format the dataframe for display
+        # Format the dataframe for display using the new formatting function
         display_df = combined_df[display_cols].copy()
 
-        # Format all scores
+        # Format all scores first (keep as numbers for proper formatting)
         score_columns = ['RELEVANCE', 'SIMILARITY', 'INFORMATIVENESS']
         for col in score_columns:
             if col in display_df.columns:
                 display_df[col] = display_df[col].apply(lambda x: round(float(x), 4))
 
-        # Format market cap
-        if 'MARKET_CAP_FISCAL' in display_df.columns:
-            display_df['MARKET_CAP_FISCAL'] = display_df['MARKET_CAP_FISCAL'].apply(
-                lambda x: f"${x:,.0f}M" if pd.notna(x) else "N/A"
-            )
-
-        # Format TEV
-        if 'TEV_FISCAL' in display_df.columns:
-            display_df['TEV_FISCAL'] = display_df['TEV_FISCAL'].apply(
-                lambda x: f"${x:,.0f}M" if pd.notna(x) else "N/A"
-            )
+        # Apply comprehensive formatting
+        display_df = format_dataframe_for_display(display_df)
 
         # Style the dataframe to highlight the target company (first row)
         def highlight_target(row):
@@ -691,7 +748,9 @@ if selected_company and target_company is not None:
                         )
 
             with tab2:
-                st.dataframe(comparison_df, use_container_width=True)
+                # Apply formatting to comparison table as well
+                formatted_comparison_df = format_dataframe_for_display(comparison_df)
+                st.dataframe(formatted_comparison_df, use_container_width=True)
 
 else:
     # Default view when no company is selected
@@ -821,9 +880,12 @@ else:
 
         st.info(f"Showing {len(sample_df)} rows out of {len(filtered_df)} total rows with {len(selected_display_cols)} columns")
 
+        # Apply formatting to the sample data as well
+        formatted_sample_df = format_dataframe_for_display(sample_df)
+
         # Display the data (remove height parameter to allow full interaction)
         st.dataframe(
-            sample_df,
+            formatted_sample_df,
             use_container_width=True,
             height=400
         )

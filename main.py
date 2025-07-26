@@ -38,9 +38,20 @@ def get_company_options(df: pd.DataFrame) -> List[str]:
 
 def get_numerical_columns(df: pd.DataFrame) -> List[str]:
     """Get numerical columns excluding company identifiers"""
-    exclude_cols = {'COMPANY_ID', 'COMPANY_NAME', 'DAY_DATE', 'YEAR_MONTH', 'INDUSTRY', 'INDUSTRY_GROUP', 'INDUSTRY_SECTOR', 'INDUSTRY_SECTOR_W_BIOTECH'}
+    exclude_cols = {'DAY_DATE', 'YEAR_MONTH'}
+
+    # Get all columns that start with specific prefixes
+    exclude_prefixes = ['INDUSTRY_', 'COMPANY_', 'SECTOR_']
+
     numerical_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    return [col for col in numerical_cols if col not in exclude_cols]
+
+    # Filter out excluded columns and columns with excluded prefixes
+    filtered_cols = []
+    for col in numerical_cols:
+        if col not in exclude_cols and not any(col.startswith(prefix) for prefix in exclude_prefixes):
+            filtered_cols.append(col)
+
+    return filtered_cols
 
 def find_company_row(df: pd.DataFrame, company_selection: str) -> Optional[pd.Series]:
     """Find the company row based on selection"""
@@ -217,7 +228,7 @@ def validate_features_for_analysis(df: pd.DataFrame, features: List[str]) -> tup
 
 # Main UI
 st.title("🏢 Company Peer Analysis Dashboard")
-st.write("Find the most relevant peer companies using relevance-based prediction methods.")
+st.write("Find the most relevant comp set for a company of interest using relevance-based prediction (RBP).")
 
 # Sidebar configuration
 st.sidebar.header("🔧 Analysis Configuration")
@@ -355,7 +366,7 @@ if selected_company and target_company is not None:
 
         st.subheader(f'📊 {"Most" if use_most_relevant else "Least"} Relevant Peer Companies')
 
-        # Display peer companies table
+        # Create display dataframe with target company included
         display_cols = ['COMPANY_NAME', 'relevance_score'] # Removed 'TICKER'
         if 'INDUSTRY_SECTOR_W_BIOTECH' in peer_companies.columns:
             display_cols.append('INDUSTRY_SECTOR_W_BIOTECH')
@@ -365,16 +376,39 @@ if selected_company and target_company is not None:
         # Add selected features to display
         display_cols.extend([col for col in selected_features if col in peer_companies.columns])
 
+        # Create target company row with same structure as peer companies
+        target_row = target_company.copy()
+        target_row['relevance_score'] = 'TARGET'  # Special marker for target company
+
+        # Combine target company with peer companies
+        combined_df = pd.concat([target_row.to_frame().T, peer_companies], ignore_index=True)
+
         # Format the dataframe for display
-        display_df = peer_companies[display_cols].copy()
-        display_df['relevance_score'] = display_df['relevance_score'].round(4)
+        display_df = combined_df[display_cols].copy()
+
+        # Format relevance scores (except for target)
+        for idx, score in enumerate(display_df['relevance_score']):
+            if score != 'TARGET':
+                display_df.loc[idx, 'relevance_score'] = round(float(score), 4)
 
         if 'MARKET_CAP_FISCAL' in display_df.columns:
             display_df['MARKET_CAP_FISCAL'] = display_df['MARKET_CAP_FISCAL'].apply(
-                lambda x: f"${x:,.0f}M" if pd.notna(x) else "N/A"
+                lambda x: f"${x:,.0f}M" if pd.notna(x) and x != 'TARGET' else "N/A"
             )
 
-        st.dataframe(display_df, use_container_width=True)
+        # Style the dataframe to highlight the target company
+        def highlight_target(row):
+            if row['relevance_score'] == 'TARGET':
+                return ['background-color: #ffeb3b; font-weight: bold'] * len(row)
+            else:
+                return [''] * len(row)
+
+        styled_df = display_df.style.apply(highlight_target, axis=1)
+
+        st.dataframe(styled_df, use_container_width=True)
+
+        # Add a note about the highlighting
+        st.caption("🎯 **Yellow highlighted row** is the target company")
 
         # Feature comparison chart
         st.subheader("📈 Feature Comparison")
@@ -424,7 +458,7 @@ if selected_company and target_company is not None:
 
 else:
     # Default view when no company is selected
-    st.info("👆 Please select a company from the sidebar to begin peer analysis.")
+    st.info("👈 Please select a company from the sidebar to begin peer analysis.")
 
     # Show data overview
     st.subheader("📋 Dataset Overview")
@@ -436,20 +470,132 @@ else:
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        st.metric("Total Companies", len(df))
+        st.metric("Total Rows", f"{len(df):,}")
     with col2:
         st.metric("Available Features", len(get_numerical_columns(df)))
+        print(get_numerical_columns(df))
     with col3:
         if 'INDUSTRY_SECTOR_W_BIOTECH' in df.columns:
             st.metric("Industries", df['INDUSTRY_SECTOR_W_BIOTECH'].nunique())
 
     # Show sample data
     st.subheader("📊 Sample Data")
-    sample_cols = ['COMPANY_NAME', 'INDUSTRY_SECTOR_W_BIOTECH', 'MARKET_CAP_FISCAL'] # Removed 'TICKER'
-    if 'YEAR_MONTH' in df.columns:
-        sample_cols.insert(-1, 'YEAR_MONTH')  # Add YEAR_MONTH before MARKET_CAP_FISCAL
-    available_cols = [col for col in sample_cols if col in df.columns]
-    st.dataframe(df[available_cols].head(10), use_container_width=True)
+
+    # Add controls for data exploration
+    col1, col2 = st.columns(2)
+
+    with col1:
+        # Limit number of rows displayed
+        max_rows = st.slider(
+            "Number of rows to display",
+            min_value=100,
+            max_value=min(5000, len(df)),
+            value=min(1000, len(df)),
+            step=100,
+            help="Adjust to control data size. Large datasets may cause performance issues."
+        )
+
+    with col2:
+        # Column selection for display
+        available_cols = [col for col in ['COMPANY_NAME', 'INDUSTRY_SECTOR_W_BIOTECH', 'MARKET_CAP_FISCAL', 'YEAR_MONTH'] if col in df.columns]
+        # Add a few numerical columns
+        numerical_sample = get_numerical_columns(df)[:5]  # First 5 numerical columns
+        available_cols.extend([col for col in numerical_sample if col not in available_cols])
+
+        selected_display_cols = st.multiselect(
+            "Select columns to display",
+            options=df.columns.tolist(),
+            default=available_cols,
+            help="Choose which columns to show. Fewer columns = faster loading."
+        )
+
+    if selected_display_cols:
+        # Add sorting controls
+        col_sort1, col_sort2, col_sort3 = st.columns(3)
+
+        with col_sort1:
+            sort_column = st.selectbox(
+                "Sort by column",
+                options=["None"] + selected_display_cols,
+                index=0,
+                help="Select a column to sort the entire dataset"
+            )
+
+        with col_sort2:
+            sort_ascending = st.radio(
+                "Sort order",
+                options=[True, False],
+                format_func=lambda x: "Ascending" if x else "Descending",
+                index=0,
+                help="Choose sort direction"
+            )
+
+        with col_sort3:
+            # Add a search/filter option
+            search_term = st.text_input(
+                "Search in COMPANY_NAME",
+                placeholder="Enter company name to filter...",
+                help="Filter companies by name (case-insensitive)"
+            )
+
+        # Apply sorting and filtering to the full dataset
+        filtered_df = df.copy()
+
+        # Apply search filter if provided
+        if search_term and 'COMPANY_NAME' in df.columns:
+            filtered_df = filtered_df[
+                filtered_df['COMPANY_NAME'].str.contains(search_term, case=False, na=False)
+            ]
+            st.info(f"Found {len(filtered_df)} companies matching '{search_term}'")
+
+        # Apply sorting to the full filtered dataset
+        if sort_column != "None":
+            try:
+                filtered_df = filtered_df.sort_values(
+                    by=sort_column,
+                    ascending=sort_ascending,
+                    na_position='last'  # Put NaN values at the end
+                )
+                st.info(f"Dataset sorted by '{sort_column}' ({'ascending' if sort_ascending else 'descending'})")
+            except Exception as e:
+                st.warning(f"Could not sort by '{sort_column}': {str(e)}")
+
+        # Now take the sample from the sorted/filtered data
+        sample_df = filtered_df[selected_display_cols].head(max_rows)
+
+        st.info(f"Showing {len(sample_df)} rows out of {len(filtered_df)} total rows with {len(selected_display_cols)} columns")
+
+        # Display the data (remove height parameter to allow full interaction)
+        st.dataframe(
+            sample_df,
+            use_container_width=True,
+            height=400
+        )
+
+        # Option to download the current filtered/sorted dataset
+        col_download1, col_download2 = st.columns(2)
+
+        with col_download1:
+            if st.button("📥 Download Filtered Data (CSV)"):
+                csv_data = filtered_df.to_csv(index=False)
+                st.download_button(
+                    label="Click to Download Filtered Data",
+                    data=csv_data,
+                    file_name=f"filtered_data_{selected_month.replace(' ', '_') if selected_month != 'All Data' else 'full'}.csv",
+                    mime="text/csv"
+                )
+
+        with col_download2:
+            if st.button("📥 Download Full Dataset (CSV)"):
+                csv_data = df.to_csv(index=False)
+                st.download_button(
+                    label="Click to Download Full Dataset",
+                    data=csv_data,
+                    file_name=f"company_data_{selected_month.replace(' ', '_') if selected_month != 'All Data' else 'full'}.csv",
+                    mime="text/csv"
+                )
+    else:
+        st.warning("Please select at least one column to display")
 
 # Footer
 st.markdown("---")

@@ -726,31 +726,21 @@ if selected_company and target_company is not None:
 
             comparison_df = pd.DataFrame(comparison_data)
 
-            # Create tabs for different visualizations
-            tab1, tab2 = st.tabs(["📊 Bar Chart", "📋 Data Table"])
+            feature_to_plot = st.selectbox(
+                "Select feature to visualize:",
+                options=selected_features,
+                key="feature_plot"
+            )
 
-            with tab1:
-                # Select feature to visualize
-                feature_to_plot = st.selectbox(
-                    "Select feature to visualize:",
-                    options=selected_features,
-                    key="feature_plot"
-                )
+            if feature_to_plot:
+                chart_data = comparison_df[['Company', 'Type', feature_to_plot]].copy()
+                chart_data = chart_data.dropna(subset=[feature_to_plot])
 
-                if feature_to_plot:
-                    chart_data = comparison_df[['Company', 'Type', feature_to_plot]].copy()
-                    chart_data = chart_data.dropna(subset=[feature_to_plot])
-
-                    if len(chart_data) > 0:
-                        st.bar_chart(
+                if len(chart_data) > 0:
+                    st.bar_chart(
                             chart_data.set_index('Company')[feature_to_plot],
-                            use_container_width=True
-                        )
-
-            with tab2:
-                # Apply formatting to comparison table as well
-                formatted_comparison_df = format_dataframe_for_display(comparison_df)
-                st.dataframe(formatted_comparison_df, use_container_width=True)
+                        use_container_width=True
+                    )
 
 else:
     # Default view when no company is selected

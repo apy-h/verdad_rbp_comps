@@ -701,15 +701,37 @@ else:
 
     with col2:
         # Column selection for display
-        available_cols = [col for col in ['COMPANY_NAME', 'INDUSTRY_SECTOR_W_BIOTECH', 'MARKET_CAP_FISCAL', 'YEAR_MONTH'] if col in df.columns]
-        # Add a few numerical columns
-        numerical_sample = get_numerical_columns(df)[:5]  # First 5 numerical columns
-        available_cols.extend([col for col in numerical_sample if col not in available_cols])
+        # Define preferred columns for display
+        preferred_display_cols = [
+            "YEAR_MONTH",
+            "COMPANY_NAME",
+            "INDUSTRY_SECTOR_W_BIOTECH",
+            "IQ_TOTAL_REV",
+            "D_ME_GR_REV",
+            "D_ME_GP_REV",
+            "IQ_EBITDA",
+            "IQ_NI",
+            "IQ_TOTAL_ASSETS",
+            "IQ_TOTAL_DEBT",
+            "MARKET_CAP_FISCAL",
+            "TEV_FISCAL",
+            "PRICE_CLOSE_USD",
+            "D_VALUE_BBG_EARN_PRICE",
+            "D_VALUE_BBG_EBITDA_EV"
+        ]
+
+        # Get available preferred columns from the dataset
+        available_preferred_display = [col for col in preferred_display_cols if col in df.columns]
+
+        # If we don't have enough preferred columns, add some numerical columns as fallback
+        if len(available_preferred_display) < 5:
+            numerical_sample = get_numerical_columns(df)[:5]  # First 5 numerical columns
+            available_preferred_display.extend([col for col in numerical_sample if col not in available_preferred_display])
 
         selected_display_cols = st.multiselect(
             "Select columns to display",
             options=df.columns.tolist(),
-            default=available_cols,
+            default=available_preferred_display,
             help="Choose which columns to show. Fewer columns = faster loading."
         )
 

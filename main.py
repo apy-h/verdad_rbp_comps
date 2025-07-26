@@ -466,6 +466,16 @@ if selected_company and target_company is not None:
     # Display target company info
     st.subheader(f"🎯 Target Company: {selected_company}")
 
+    # Add warning when no date filter is selected
+    if not selected_month or selected_month == "":
+        total_rows = len(df)
+        st.warning(
+            f"**No date filter selected**: Analysis will process {total_rows:,} rows across all time periods. "
+            f"This not only takes a long time, but also isn't cross-sectional analysis. "
+            f"Consider selecting a specific month-year for better performance and more meaningful comparisons.",
+            icon="⚠️"
+        )
+
     col1, col2, col3 = st.columns(3)
 
     with col1:

@@ -2,7 +2,6 @@ import rbp
 import numpy as np
 import pandas as pd
 import streamlit as st
-import plotly.express as px
 import plotly.graph_objects as go
 from helpers import prep_greg_data
 from typing import List, Optional
@@ -614,23 +613,33 @@ if selected_company and target_company is not None:
             icon="⚠️"
         )
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
 
     with col1:
         if 'INDUSTRY_SECTOR_W_BIOTECH' in target_company.index:
             st.metric("Industry", target_company['INDUSTRY_SECTOR_W_BIOTECH'])
 
     with col2:
+        if 'PRICE_CLOSE_USD' in target_company.index:
+            st.metric("Price (Close)", f"${target_company['PRICE_CLOSE_USD']:,.2f}")
+
+    with col3:
         if 'MARKET_CAP_FISCAL' in target_company.index:
             market_cap = target_company['MARKET_CAP_FISCAL']
             if pd.notna(market_cap):
-                st.metric("Market Cap", f"${market_cap:,.0f}M")
+                if market_cap < 0:
+                    st.metric("Market Cap", f"-${abs(market_cap):,.0f}M")
+                else:
+                    st.metric("Market Cap", f"${market_cap:,.0f}M")
 
-    with col3:
+    with col4:
         if 'TEV_FISCAL' in target_company.index:
             tev = target_company['TEV_FISCAL']
             if pd.notna(tev):
-                st.metric("TEV", f"${tev:,.0f}M")
+                if tev < 0:
+                    st.metric("TEV", f"-${abs(tev):,.0f}M")
+                else:
+                    st.metric("TEV", f"${tev:,.0f}M")
 
     # Display results if available
     if 'peer_results' in st.session_state:
@@ -666,17 +675,56 @@ if selected_company and target_company is not None:
         selected_features = results['selected_features']
         selected_target_multiple = results.get('target_multiple', 'D_VALUE_BBG_EBITDA_EV')
 
-        st.subheader(f'📝 {"Most" if use_most_relevant else "Least Relevant"} Peer Companies')
+        st.subheader(f'📝 {"Most" if use_most_relevant else "Least"} Relevant Peer Companies')
 
         # Create display dataframe with target company included
         display_cols = ['COMPANY_NAME', 'RELEVANCE', 'SIMILARITY', 'INFORMATIVENESS', 'MARKET_CAP_FISCAL', 'TEV_FISCAL']
 
-        # Add the selected target multiple to display columns
-        if selected_target_multiple in all_companies.columns:
-            display_cols.append(selected_target_multiple)
-
-        # Add selected features to display
+        # Add selected features to display columns first
         display_cols.extend([col for col in selected_features if col in all_companies.columns])
+
+        # Add the selected target multiple and related columns at the end (rightmost)
+        target_multiple_cols = []
+        if selected_target_multiple in all_companies.columns:
+            target_multiple_cols.append(selected_target_multiple)
+
+            # Add predicted target multiple and residual if available
+            pred_col_name = f"{selected_target_multiple}_PRED"
+            residual_col_name = f"{selected_target_multiple}_RESIDUAL"
+
+            # Check if prediction results are available and add predicted values and residuals
+            if 'analysis_details' in results and results['analysis_details'] is not None:
+                analysis_details = results['analysis_details']
+
+                # Get predicted values from RBP results
+                if 'y' in analysis_details:
+                    predicted_values = analysis_details['y'].flatten()
+                    all_companies[pred_col_name] = predicted_values
+                    target_multiple_cols.append(pred_col_name)
+
+                    # Calculate residuals (actual - predicted)
+                    actual_values = all_companies[selected_target_multiple].values
+                    residuals = actual_values - predicted_values
+                    all_companies[residual_col_name] = residuals
+                    target_multiple_cols.append(residual_col_name)
+
+        # Add target multiple columns to the end of display_cols (rightmost position)
+        display_cols.extend(target_multiple_cols)
+
+        # Update the filtered peers and target company row to include new columns
+        if len(peer_companies_only) > 0:
+            if use_most_relevant:
+                # Get top n_peers (highest relevance scores)
+                filtered_peers = all_companies[all_companies['COMPANY_NAME'] != target_company_name].head(n_peers)
+            else:
+                # Get bottom n_peers (lowest relevance scores)
+                filtered_peers = all_companies[all_companies['COMPANY_NAME'] != target_company_name].tail(n_peers).iloc[::-1]
+        else:
+            filtered_peers = all_companies[all_companies['COMPANY_NAME'] != target_company_name]
+
+        # Update target company row to include new columns
+        if len(target_company_matches) > 0:
+            target_company_row = all_companies[all_companies['COMPANY_NAME'] == target_company_name].iloc[0]
 
         # Combine target company with peer companies (target first)
         if target_company_row is not None:
@@ -741,9 +789,6 @@ if selected_company and target_company is not None:
                 chart_data = chart_data.dropna(subset=[feature_to_plot])
 
                 if len(chart_data) > 0:
-                    import plotly.express as px
-                    import plotly.graph_objects as go
-
                     # Create colors for bars - red for target company, blue for peers
                     colors = [RED if row['Type'] == 'Target' else '#1f77b4' for _, row in chart_data.iterrows()]
 
@@ -815,6 +860,7 @@ else:
             "YEAR_MONTH",
             "COMPANY_NAME",
             "INDUSTRY_SECTOR_W_BIOTECH",
+            "PRICE_CLOSE_USD",
             "IQ_TOTAL_REV",
             "D_APY_GR_REV",
             "D_APY_GP_REV",
@@ -824,7 +870,6 @@ else:
             "IQ_TOTAL_DEBT",
             "MARKET_CAP_FISCAL",
             "TEV_FISCAL",
-            "PRICE_CLOSE_USD",
             "D_VALUE_BBG_EARN_PRICE",
             "D_VALUE_BBG_EBITDA_EV"
         ]

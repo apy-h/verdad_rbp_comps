@@ -77,7 +77,7 @@ def format_dataframe_for_display(df: pd.DataFrame) -> pd.DataFrame:
 
     Formatting rules:
     - DAY_DATE: year-month-day format
-    - IQ_*, D_APY_FCF*, D_APY_LOG_ASSETS*, MARKET_CAP_FISCAL, TEV_FISCAL: ${x:,.0f}M format (negative sign outside $)
+    - IQ_*, D_APY_FCF*, D_APY_LOG_ASSETS*, MARKET_CAP_FISCAL, TEV_FISCAL: ${x:,.2f}M format (negative sign outside $)
     - PRICE_CLOSE_USD: ${x:,.2f} format (negative sign outside $)
     - *_RET, D_APY_GP_REV, D_APY_GR_*: decimal to percentage with 2 decimal points
     - SECTOR_*: 0 or 1, no decimal points
@@ -99,7 +99,7 @@ def format_dataframe_for_display(df: pd.DataFrame) -> pd.DataFrame:
                       col.startswith('D_APY_LOG_ASSETS') or
                       col in ['MARKET_CAP_FISCAL', 'TEV_FISCAL']):
                     display_df[col] = display_df[col].apply(
-                        lambda x: f"-${abs(x):,.0f}M" if pd.notna(x) and x < 0 else f"${x:,.0f}M" if pd.notna(x) else "N/A"
+                        lambda x: f"-${abs(x):,.2f}M" if pd.notna(x) and x < 0 else f"${x:,.2f}M" if pd.notna(x) else "N/A"
                     )
 
                 # Dollar amounts: PRICE_CLOSE_USD

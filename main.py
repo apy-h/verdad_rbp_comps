@@ -594,11 +594,16 @@ if selected_company and target_company is not None:
             filtered_peers = peer_companies_only
 
         selected_features = results['selected_features']
+        selected_target_multiple = results.get('target_multiple', 'D_VALUE_BBG_EBITDA_EV')
 
         st.subheader(f'📝 {"Most" if use_most_relevant else "Least"} Relevant Peer Companies')
 
         # Create display dataframe with target company included
-        display_cols = ['COMPANY_NAME', 'RELEVANCE', 'SIMILARITY', 'INFORMATIVENESS', 'MARKET_CAP_FISCAL']
+        display_cols = ['COMPANY_NAME', 'RELEVANCE', 'SIMILARITY', 'INFORMATIVENESS', 'MARKET_CAP_FISCAL', 'TEV_FISCAL']
+
+        # Add the selected target multiple to display columns
+        if selected_target_multiple in all_companies.columns:
+            display_cols.append(selected_target_multiple)
 
         # Add selected features to display
         display_cols.extend([col for col in selected_features if col in all_companies.columns])
@@ -618,8 +623,15 @@ if selected_company and target_company is not None:
             if col in display_df.columns:
                 display_df[col] = display_df[col].apply(lambda x: round(float(x), 4))
 
+        # Format market cap
         if 'MARKET_CAP_FISCAL' in display_df.columns:
             display_df['MARKET_CAP_FISCAL'] = display_df['MARKET_CAP_FISCAL'].apply(
+                lambda x: f"${x:,.0f}M" if pd.notna(x) else "N/A"
+            )
+
+        # Format TEV
+        if 'TEV_FISCAL' in display_df.columns:
+            display_df['TEV_FISCAL'] = display_df['TEV_FISCAL'].apply(
                 lambda x: f"${x:,.0f}M" if pd.notna(x) else "N/A"
             )
 

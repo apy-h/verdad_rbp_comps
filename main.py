@@ -10,6 +10,58 @@ RED = '#ff4b4b'
 
 st.set_page_config(page_title="Company Peer Analysis", layout="wide")
 
+def clean_column_name(col_name: str) -> str:
+    """Remove prefixes from column names for display purposes"""
+    prefixes_to_remove = ['IQ_', 'D_VALUE_BBG_', 'D_APY_']
+
+    for prefix in prefixes_to_remove:
+        if col_name.startswith(prefix):
+            return col_name[len(prefix):]
+
+    return col_name
+
+def create_column_mapping(columns: List[str]) -> dict:
+    """Create a mapping from original column names to cleaned display names, handling duplicates"""
+    mapping = {}
+    cleaned_names_count = {}
+
+    for col in columns:
+        cleaned = clean_column_name(col)
+
+        # Check if this cleaned name already exists
+        if cleaned in cleaned_names_count:
+            cleaned_names_count[cleaned] += 1
+            # Add a suffix to make it unique
+            mapping[col] = f"{cleaned}_{cleaned_names_count[cleaned]}"
+        else:
+            cleaned_names_count[cleaned] = 1
+            mapping[col] = cleaned
+
+    return mapping
+
+def reverse_column_mapping(display_name: str, original_columns: List[str]) -> str:
+    """Find the original column name from a cleaned display name"""
+    prefixes = ['IQ_', 'D_VALUE_BBG_', 'D_APY_']
+
+    # First check if the display_name exists as-is (no prefix was removed)
+    if display_name in original_columns:
+        return display_name
+
+    # Handle numbered suffixes (e.g., "TOTAL_REV_2")
+    if '_' in display_name and display_name.split('_')[-1].isdigit():
+        base_name = '_'.join(display_name.split('_')[:-1])
+    else:
+        base_name = display_name
+
+    # Then check with each prefix
+    for prefix in prefixes:
+        original_name = prefix + base_name
+        if original_name in original_columns:
+            return original_name
+
+    # If not found, return as-is (shouldn't happen in normal usage)
+    return display_name
+
 def load_data(start_date: Optional[str] = None, end_date: Optional[str] = None):
     """Load and cache the data with optional date filtering"""
     # Create a cache key based on date filters
@@ -77,6 +129,7 @@ def get_target_multiple_options(df: pd.DataFrame) -> List[str]:
 def format_dataframe_for_display(df: pd.DataFrame) -> pd.DataFrame:
     """
     Apply consistent formatting rules to dataframe columns for display.
+    Also rename columns to remove prefixes.
 
     Formatting rules:
     - DAY_DATE: year-month-day format
@@ -137,6 +190,10 @@ def format_dataframe_for_display(df: pd.DataFrame) -> pd.DataFrame:
                 # If formatting fails for any column, keep original values
                 st.warning(f"Could not format column '{col}': {str(e)}")
                 continue
+
+    # Rename columns to remove prefixes, handling duplicates
+    column_mapping = create_column_mapping(display_df.columns.tolist())
+    display_df = display_df.rename(columns=column_mapping)
 
     return display_df
 
@@ -455,8 +512,13 @@ if selected_company:
             else:
                 current_features = st.session_state.get('temp_selected_features', [])
                 current_target_multiple = st.session_state.get('temp_target_multiple', 'D_VALUE_BBG_EBITDA_EV')
-            st.sidebar.info(f"✏️ Features locked: {', '.join(current_features)}")
-            st.sidebar.info(f"🖋️ Target multiple locked: {current_target_multiple}")
+
+            # Show cleaned feature names for display
+            current_features_display = [clean_column_name(feat) for feat in current_features]
+            current_target_multiple_display = clean_column_name(current_target_multiple)
+
+            st.sidebar.info(f"✏️ Features locked: {', '.join(current_features_display)}")
+            st.sidebar.info(f"🖋️ Target multiple locked: {current_target_multiple_display}")
             selected_features = current_features
             selected_target_multiple = current_target_multiple
         else:
@@ -464,23 +526,38 @@ if selected_company:
             numerical_cols = get_numerical_columns(df)
             default_features = get_default_features(df, PREFERRED_FEATURES, target_count=5)
 
-            selected_features = st.sidebar.multiselect(
+            # Create display options with cleaned names
+            numerical_cols_mapping = create_column_mapping(numerical_cols)
+            display_options = list(numerical_cols_mapping.values())
+            default_features_display = [clean_column_name(feat) for feat in default_features]
+
+            selected_features_display = st.sidebar.multiselect(
                 "Select Features for Analysis",
-                options=numerical_cols,
-                default=default_features,
+                options=display_options,
+                default=default_features_display,
                 help="Choose the financial metrics to use for finding similar companies. Preferred features are pre-selected when available."
             )
 
+            # Convert back to original column names
+            selected_features = [reverse_column_mapping(display_name, numerical_cols) for display_name in selected_features_display]
+
             # Target multiple selection
             target_multiple_options = get_target_multiple_options(df)
-            default_target_multiple = 'D_VALUE_BBG_EBITDA_EV' if 'D_VALUE_BBG_EBITDA_EV' in target_multiple_options else (target_multiple_options[0] if target_multiple_options else 'MARKET_CAP_FISCAL')
+            target_multiple_mapping = create_column_mapping(target_multiple_options)
+            target_multiple_display_options = list(target_multiple_mapping.values())
 
-            selected_target_multiple = st.sidebar.selectbox(
+            default_target_multiple = 'D_VALUE_BBG_EBITDA_EV' if 'D_VALUE_BBG_EBITDA_EV' in target_multiple_options else (target_multiple_options[0] if target_multiple_options else 'MARKET_CAP_FISCAL')
+            default_target_multiple_display = clean_column_name(default_target_multiple)
+
+            selected_target_multiple_display = st.sidebar.selectbox(
                 "Select Target Multiple",
-                options=target_multiple_options if target_multiple_options else ['MARKET_CAP_FISCAL'],
-                index=target_multiple_options.index(default_target_multiple) if default_target_multiple in target_multiple_options else 0,
+                options=target_multiple_display_options if target_multiple_display_options else ['MARKET_CAP_FISCAL'],
+                index=target_multiple_display_options.index(default_target_multiple_display) if default_target_multiple_display in target_multiple_display_options else 0,
                 help="Choose the target multiple for RBP analysis. This doesn't affect peer group selection but is necessary for the RBP algorithm to function properly."
             )
+
+            # Convert back to original column name
+            selected_target_multiple = reverse_column_mapping(selected_target_multiple_display, target_multiple_options if target_multiple_options else ['MARKET_CAP_FISCAL'])
 
         # Number of peers - always interactive (unless analysis is in progress)
         if has_results:
@@ -731,14 +808,18 @@ if selected_company and target_company is not None:
         # Format the dataframe for display using the new formatting function
         display_df = combined_df[display_cols].copy()
 
-        # Format all scores first (keep as numbers for proper formatting)
         score_columns = ['RELEVANCE', 'SIMILARITY', 'INFORMATIVENESS']
         for col in score_columns:
             if col in display_df.columns:
                 display_df[col] = display_df[col].apply(lambda x: round(float(x), 4))
 
-        # Apply comprehensive formatting
+        # Apply comprehensive formatting (this will also clean column names)
         display_df = format_dataframe_for_display(display_df)
+
+        # Check for duplicate column names and warn if found
+        if len(display_df.columns) != len(set(display_df.columns)):
+            duplicate_cols = [col for col in display_df.columns if list(display_df.columns).count(col) > 1]
+            st.warning(f"Warning: Duplicate column names detected after cleaning: {set(duplicate_cols)}. This may cause display issues.")
 
         # Style the dataframe to highlight the target company (first row)
         def highlight_target(row):
@@ -748,9 +829,14 @@ if selected_company and target_company is not None:
             else:
                 return [''] * len(row)
 
-        styled_df = display_df.style.apply(highlight_target, axis=1)
-
-        st.dataframe(styled_df, use_container_width=True)
+        # Check if columns are unique before applying styling
+        if len(display_df.columns) == len(set(display_df.columns)):
+            styled_df = display_df.style.apply(highlight_target, axis=1)
+            st.dataframe(styled_df, use_container_width=True)
+        else:
+            # If we have duplicate columns, just display without styling
+            st.warning("Displaying table without highlighting due to duplicate column names.")
+            st.dataframe(display_df, use_container_width=True)
 
         # Feature comparison chart
         st.subheader("📈 Feature Comparison")
@@ -774,11 +860,18 @@ if selected_company and target_company is not None:
 
             comparison_df = pd.DataFrame(comparison_data)
 
-            feature_to_plot = st.selectbox(
+            # Create display options for feature selection with cleaned names
+            feature_display_options = [clean_column_name(feat) for feat in selected_features]
+            feature_mapping = {clean_column_name(feat): feat for feat in selected_features}
+
+            feature_to_plot_display = st.selectbox(
                 "Select feature to visualize:",
-                options=selected_features,
+                options=feature_display_options,
                 key="feature_plot"
             )
+
+            # Convert back to original column name
+            feature_to_plot = feature_mapping[feature_to_plot_display]
 
             if feature_to_plot:
                 chart_data = comparison_df[['Company', 'Type', feature_to_plot]].copy()
@@ -803,7 +896,7 @@ if selected_company and target_company is not None:
                     fig.update_layout(
                         title="",
                         xaxis_title="",
-                        yaxis_title=feature_to_plot,
+                        yaxis_title=feature_to_plot_display,  # Use cleaned name for chart label
                         showlegend=False,
                         height=400
                     )
@@ -878,24 +971,38 @@ else:
             numerical_sample = get_numerical_columns(df)[:5]  # First 5 numerical columns
             available_preferred_display.extend([col for col in numerical_sample if col not in available_preferred_display])
 
-        selected_display_cols = st.multiselect(
+        # Create display options with cleaned names
+        all_columns_mapping = create_column_mapping(df.columns.tolist())
+        available_preferred_display_cleaned = [clean_column_name(col) for col in available_preferred_display]
+        all_display_options = list(all_columns_mapping.values())
+
+        selected_display_cols_cleaned = st.multiselect(
             "Select columns to display",
-            options=df.columns.tolist(),
-            default=available_preferred_display,
+            options=all_display_options,
+            default=available_preferred_display_cleaned,
             help="Choose which columns to show. Fewer columns = faster loading."
         )
+
+        # Convert back to original column names
+        selected_display_cols = [reverse_column_mapping(display_name, df.columns.tolist()) for display_name in selected_display_cols_cleaned]
 
     if selected_display_cols:
         # Add sorting controls
         col_sort1, col_sort2, col_sort3 = st.columns(3)
 
         with col_sort1:
-            sort_column = st.selectbox(
+            # Convert selected display columns to cleaned names for the sort dropdown
+            selected_display_cols_cleaned_for_sort = [clean_column_name(col) for col in selected_display_cols]
+
+            sort_column_display = st.selectbox(
                 "Sort by column",
-                options=["None"] + selected_display_cols,
+                options=["None"] + selected_display_cols_cleaned_for_sort,
                 index=0,
                 help="Select a column to sort the entire dataset"
             )
+
+            # Convert back to original column name
+            sort_column = reverse_column_mapping(sort_column_display, selected_display_cols) if sort_column_display != "None" else "None"
 
         with col_sort2:
             sort_ascending = st.radio(
@@ -932,7 +1039,8 @@ else:
                     ascending=sort_ascending,
                     na_position='last'  # Put NaN values at the end
                 )
-                st.info(f"Dataset sorted by '{sort_column}' ({'ascending' if sort_ascending else 'descending'})")
+                sort_column_display_for_info = clean_column_name(sort_column)
+                st.info(f"Dataset sorted by '{sort_column_display_for_info}' ({'ascending' if sort_ascending else 'descending'})")
             except Exception as e:
                 st.warning(f"Could not sort by '{sort_column}': {str(e)}")
 
@@ -941,7 +1049,7 @@ else:
 
         st.info(f"Showing {len(sample_df)} rows out of {len(filtered_df)} total rows with {len(selected_display_cols)} columns")
 
-        # Apply formatting to the sample data as well
+        # Apply formatting to the sample data as well (this will also clean column names)
         formatted_sample_df = format_dataframe_for_display(sample_df)
 
         # Display the data (remove height parameter to allow full interaction)

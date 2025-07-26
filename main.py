@@ -2,6 +2,8 @@ import rbp
 import numpy as np
 import pandas as pd
 import streamlit as st
+import plotly.express as px
+import plotly.graph_objects as go
 from helpers import prep_greg_data
 from typing import List, Optional
 
@@ -737,10 +739,35 @@ if selected_company and target_company is not None:
                 chart_data = chart_data.dropna(subset=[feature_to_plot])
 
                 if len(chart_data) > 0:
-                    st.bar_chart(
-                            chart_data.set_index('Company')[feature_to_plot],
-                        use_container_width=True
+                    import plotly.express as px
+                    import plotly.graph_objects as go
+
+                    # Create colors for bars - red for target company, blue for peers
+                    colors = ['#ff4b4b' if row['Type'] == 'Target' else '#1f77b4' for _, row in chart_data.iterrows()]
+
+                    # Create bar chart with custom colors
+                    fig = go.Figure(data=[
+                        go.Bar(
+                            x=chart_data['Company'],
+                            y=chart_data[feature_to_plot],
+                            marker_color=colors,
+                            text=chart_data[feature_to_plot].round(4),
+                            textposition='auto'
+                        )
+                    ])
+
+                    fig.update_layout(
+                        title="",
+                        xaxis_title="",
+                        yaxis_title=feature_to_plot,
+                        showlegend=False,
+                        height=400
                     )
+
+                    # Rotate x-axis labels for better readability
+                    fig.update_xaxes(tickangle=45)
+
+                    st.plotly_chart(fig, use_container_width=True)
 
 else:
     # Default view when no company is selected

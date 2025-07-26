@@ -167,7 +167,7 @@ def run_peer_analysis(df: pd.DataFrame, target_company: pd.Series, features: Lis
 
         # Run prediction to get ALL relevance scores (analyze all companies in the industry)
         # Use a high threshold to get all companies
-        n_all_companies = len(analysis_df) - 1  # Exclude target company
+        n_all_companies = len(analysis_df)  # Include all companies including target
         _, pred_details = rbp.predict(X, target_values, y,
                                      thresh=n_all_companies,
                                      most=use_most_relevant,
@@ -185,26 +185,24 @@ def run_peer_analysis(df: pd.DataFrame, target_company: pd.Series, features: Lis
             st.error("No relevance scores computed. Try adjusting the threshold or features.")
             return None, None
 
-        # Exclude the target company from results (it would be the most/least relevant to itself)
-        if use_most_relevant:
-            # Skip the first most relevant (target company), get all others
-            peer_indices = np.argsort(relevance_scores)[:-1][::-1]  # All except last (least relevant)
-        else:
-            # Skip the last least relevant (target company), get all others
-            peer_indices = np.argsort(relevance_scores)[1:]  # All except first (most relevant)
+        # Get ALL companies with their scores (including target company)
+        all_companies = analysis_df.copy()
+        all_companies['RELEVANCE_SCORE'] = relevance_scores
+        all_companies['SIMILARITY_SCORE'] = similarity_scores
+        all_companies['INFORMATIVENESS_SCORE'] = informativeness_scores
 
-        # Get ALL peer companies with their scores
-        all_peer_companies = analysis_df.iloc[peer_indices].copy()
-        all_peer_companies['RELEVANCE_SCORE'] = relevance_scores[peer_indices]
+        # Sort by relevance score for consistent ordering (target should be at the top)
+        all_companies = all_companies.sort_values('RELEVANCE_SCORE', ascending=False)
 
-        # Add similarity and informativeness scores
-        all_peer_companies['SIMILARITY_SCORE'] = similarity_scores[peer_indices]
-        all_peer_companies['INFORMATIVENESS_SCORE'] = informativeness_scores[peer_indices]
+        # Find the target company in the results
+        target_company_name = target_company.get('COMPANY_NAME', '')
+        target_company_matches = all_companies[all_companies['COMPANY_NAME'] == target_company_name]
 
-        # Sort by relevance score for consistent ordering
-        all_peer_companies = all_peer_companies.sort_values('RELEVANCE_SCORE', ascending=False)
+        if len(target_company_matches) == 0:
+            st.error("Target company not found in analysis results")
+            return None, None
 
-        return all_peer_companies, pred_details
+        return all_companies, pred_details
 
     except ZeroDivisionError as e:
         st.error(f"Division by zero error in RBP analysis. This might be due to insufficient data variation or extreme values in {target_industry} sector. Try selecting different features or a different time period.")
@@ -540,9 +538,32 @@ if selected_company and target_company is not None:
     if 'peer_results' in st.session_state:
         results = st.session_state.peer_results
 
-        # Filter peer companies based on current settings
-        all_peer_companies = results['all_peer_companies']
-        peer_companies = filter_peer_results(all_peer_companies, n_peers, use_most_relevant)
+        # Get all companies from analysis (includes target company)
+        all_companies = results['all_peer_companies']
+
+        # Find target company in the results
+        target_company_name = selected_company
+        target_company_matches = all_companies[all_companies['COMPANY_NAME'] == target_company_name]
+
+        if len(target_company_matches) > 0:
+            target_company_row = target_company_matches.iloc[0]
+            # Remove target company from all_companies for peer filtering
+            peer_companies_only = all_companies[all_companies['COMPANY_NAME'] != target_company_name]
+        else:
+            st.error("Target company not found in analysis results")
+            target_company_row = None
+            peer_companies_only = all_companies
+
+        # Filter peer companies based on current settings (excluding target)
+        if len(peer_companies_only) > 0:
+            if use_most_relevant:
+                # Get top n_peers (highest relevance scores)
+                filtered_peers = peer_companies_only.head(n_peers)
+            else:
+                # Get bottom n_peers (lowest relevance scores)
+                filtered_peers = peer_companies_only.tail(n_peers).iloc[::-1]
+        else:
+            filtered_peers = peer_companies_only
 
         selected_features = results['selected_features']
 
@@ -552,64 +573,33 @@ if selected_company and target_company is not None:
         display_cols = ['COMPANY_NAME', 'RELEVANCE_SCORE', 'SIMILARITY_SCORE', 'INFORMATIVENESS_SCORE', 'MARKET_CAP_FISCAL']
 
         # Add selected features to display
-        display_cols.extend([col for col in selected_features if col in peer_companies.columns])
+        display_cols.extend([col for col in selected_features if col in all_companies.columns])
 
-        # Create target company row with same structure as peer companies
-        target_row = target_company.copy()
-
-        # Get actual scores for target company from analysis results
-        analysis_details = results['analysis_details']
-
-        # FIXME
-        # Target company has maximum relevance (1.0) to itself
-        target_row['RELEVANCE_SCORE'] = 1.0
-
-        # Add actual similarity and informativeness scores if they exist
-        if 'SIMILARITY_SCORE' in peer_companies.columns:
-            # Target company has maximum similarity (1.0) to itself
-            target_row['SIMILARITY_SCORE'] = 1.0
-
-        if 'INFORMATIVENESS_SCORE' in peer_companies.columns:
-            # Use info_i (informativeness of target) from prediction details
-            if 'info_i' in analysis_details:
-                target_informativeness = analysis_details['info_i']
-                if hasattr(target_informativeness, 'flatten'):
-                    target_informativeness = target_informativeness.flatten()[0]
-                elif isinstance(target_informativeness, (list, np.ndarray)):
-                    target_informativeness = target_informativeness[0]
-                target_row['INFORMATIVENESS_SCORE'] = target_informativeness
-            else:
-                # Fallback - use average of peer informativeness or 1.0
-                target_row['INFORMATIVENESS_SCORE'] = 1.0
-
-        # Combine target company with peer companies
-        combined_df = pd.concat([target_row.to_frame().T, peer_companies], ignore_index=True)
+        # Combine target company with peer companies (target first)
+        if target_company_row is not None:
+            combined_df = pd.concat([target_company_row.to_frame().T, filtered_peers], ignore_index=True)
+        else:
+            combined_df = filtered_peers
 
         # Format the dataframe for display
         display_df = combined_df[display_cols].copy()
 
-        # Format all scores (including target)
-        for idx in range(len(display_df)):
-            # Format relevance score
-            relevance_score = display_df.loc[idx, 'RELEVANCE_SCORE']
-            display_df.loc[idx, 'RELEVANCE_SCORE'] = round(float(relevance_score), 4)
-
-            sim_score = display_df.loc[idx, 'SIMILARITY_SCORE']
-            display_df.loc[idx, 'SIMILARITY_SCORE'] = round(float(sim_score), 4)
-
-            info_score = display_df.loc[idx, 'INFORMATIVENESS_SCORE']
-            display_df.loc[idx, 'INFORMATIVENESS_SCORE'] = round(float(info_score), 4)
+        # Format all scores
+        score_columns = ['RELEVANCE_SCORE', 'SIMILARITY_SCORE', 'INFORMATIVENESS_SCORE']
+        for col in score_columns:
+            if col in display_df.columns:
+                display_df[col] = display_df[col].apply(lambda x: round(float(x), 4))
 
         if 'MARKET_CAP_FISCAL' in display_df.columns:
             display_df['MARKET_CAP_FISCAL'] = display_df['MARKET_CAP_FISCAL'].apply(
-                lambda x: f"${x:,.0f}M" if pd.notna(x) and x != 'TARGET' else "N/A"
+                lambda x: f"${x:,.0f}M" if pd.notna(x) else "N/A"
             )
 
         # Style the dataframe to highlight the target company (first row)
         def highlight_target(row):
-            # Target company is always the first row (index 0)
-            if row.name == 0:
-                return ['background-color: #ff4b4b; font-weight: bold'] * len(row)
+            # Target company is always the first row (index 0) when present
+            if row.name == 0 and target_company_row is not None:
+                return ['background-color: #ff4b4b; color: white; font-weight: bold'] * len(row)
             else:
                 return [''] * len(row)
 
@@ -630,8 +620,8 @@ if selected_company and target_company is not None:
                 target_row[feature] = target_company[feature] if feature in target_company.index else np.nan
             comparison_data.append(target_row)
 
-            # Add peer companies
-            for idx, (_, peer) in enumerate(peer_companies.iterrows()):
+            # Add peer companies (use filtered_peers instead of peer_companies)
+            for idx, (_, peer) in enumerate(filtered_peers.iterrows()):
                 peer_row = {'Company': peer['COMPANY_NAME'], 'Type': f'Peer {idx+1}'}
                 for feature in selected_features:
                     peer_row[feature] = peer[feature] if feature in peer.index else np.nan
